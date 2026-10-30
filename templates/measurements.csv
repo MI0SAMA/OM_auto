@@ -1,0 +1,3 @@
+pad_id,measured_at,protocol_id,pulse_v,pulse_width_us,interval_us,status,reviewed,pr_uc_cm2,ec_mv_cm,breakdown_v,max_voltage_v,leakage_a_cm2,invalid_reasons,raw_path
+S001:R1:U1:C180,2026-10-29T10:00:00,PUND-v1,20,10,100,valid,1,35.2,2.1,,20,,,
+S001:R1:U1:S100,2026-10-29T10:15:00,PUND-v1,20,10,100,breakdown,1,,,16,16,,breakdown,

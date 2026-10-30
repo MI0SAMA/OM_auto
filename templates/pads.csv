@@ -1,0 +1,3 @@
+pad_id,region_id,layout_type_id,layout_unit_id,unit_row,unit_col,pad_local_id,pad_row,pad_col,shape,width_um,height_um,diameter_um,x,y,usable,exclusion_reason,area_source,area_confidence,image_id
+S001:R1:L_A:U01:r03c05-C180,R1,L_A,U01,1,1,r03c05-C180,3,5,circle,,,180,100,100,1,,design,high,
+S001:R1:L_A:U01:r03c06-S100,R1,L_A,U01,1,1,r03c06-S100,3,6,square,100,100,,120,100,1,,design,high,
