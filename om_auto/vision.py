@@ -40,14 +40,22 @@ def candidates(data, min_size=20, max_size=500, polarity="light"):
         raise ValueError("候选尺寸范围无效")
     if polarity not in {"light", "dark"}:
         raise ValueError("极性仅支持 light/dark")
-    image = Image.open(BytesIO(data)).convert("L")
+    image = (data if isinstance(data, Image.Image) else Image.open(BytesIO(data))).convert("L")
     factor = max(1, max(image.size) / 1800)
     small = image.resize((max(1, round(image.width/factor)), max(1, round(image.height/factor))))
     arr = np.asarray(small, dtype=np.float32)
     found = []
-    # Two background scales handle common low and high magnification images.
+    cell_size = max(4., max_size * .3)
+    buckets = {}
+    # The background varies over tens of pixels. Estimate it on a quarter-size
+    # image, then interpolate back; filtering every full-resolution pixel with
+    # sigma 45/95 dominates runtime on small servers.
+    coarse = arr[::4, ::4]
     for sigma in (45, 95):
-        contrast = arr - ndimage.gaussian_filter(arr, sigma=sigma)
+        blurred = ndimage.gaussian_filter(coarse, sigma=sigma / 4)
+        background = np.asarray(Image.fromarray(blurred).resize(
+            (arr.shape[1], arr.shape[0]), Image.Resampling.BILINEAR))
+        contrast = arr - background
         mask = contrast > 5 if polarity == "light" else contrast < -5
         mask = ndimage.binary_opening(mask, iterations=1)
         labeled, _ = ndimage.label(mask)
@@ -67,14 +75,18 @@ def candidates(data, min_size=20, max_size=500, polarity="light"):
             if ratio < 0.72 or fill < 0.48:
                 continue
             x, y = (box[1].start+w/2)*factor, (box[0].start+h/2)*factor
+            bx, by = int(x // cell_size), int(y // cell_size)
+            nearby = (found[i] for gx in range(bx-1, bx+2) for gy in range(by-1, by+2)
+                      for i in buckets.get((gx, gy), ()))
             if any(abs(x-p["x"]) < min(original_w,p["width_px"])*.3 and
-                   abs(y-p["y"]) < min(original_h,p["height_px"])*.3 for p in found):
+                   abs(y-p["y"]) < min(original_h,p["height_px"])*.3 for p in nearby):
                 continue
             shape = ("square" if fill >= 0.83 else
                      "circle" if ratio >= .8 and .50 <= fill < .83 else "other")
             found.append({"x": round(x, 1), "y": round(y, 1),
                           "width_px": round(original_w, 1), "height_px": round(original_h, 1),
                           "shape_guess": shape, "fill": round(fill, 3)})
+            buckets.setdefault((bx, by), []).append(len(found) - 1)
     if len(found) > 20_000:
         raise ValueError("候选超过 20000 个；请缩小检测区域或收紧像素尺寸范围")
     # Repeated pads form rows and columns. Keep isolated spots available for

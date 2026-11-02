@@ -241,6 +241,15 @@ def test_om_candidates_are_pixel_proposals():
     assert all(p['shape_guess']=='square' for p in result['candidates'])
 
 
+def test_om_candidates_accept_image_without_reencoding():
+    image = Image.new('L', (450, 200), 100)
+    draw = ImageDraw.Draw(image)
+    for x in (50, 180, 310):
+        draw.rectangle((x, 60, x + 70, 130), fill=180)
+    stream = BytesIO(); image.save(stream, format='PNG')
+    assert candidates(image, 30, 100)['candidates'] == candidates(stream.getvalue(), 30, 100)['candidates']
+
+
 def test_om_candidates_cover_full_large_grid():
     image = Image.new('L', (800, 800), 100)
     draw = ImageDraw.Draw(image)
