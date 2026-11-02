@@ -187,10 +187,12 @@ def complete_lattice(image: Image.Image, proposals, polarity="light"):
     # them below. Require a repeated image signal before completing either.
     small_radius, small_center, small_ring = masks(diameter * .48)
     def small_grid(unit, position):
-        xs = unit["x_lines"][0] - pitch / 4 + np.arange(count * 2) * pitch / 2
-        ys = (unit["y_lines"][0] - 7 * pitch / 6 + np.arange(2) * pitch / 2
+        x_pitch = float(np.median(np.diff(unit["x_lines"])))
+        y_pitch = float(np.median(np.diff(unit["y_lines"])))
+        xs = unit["x_lines"][0] - x_pitch / 4 + np.arange(count * 2) * x_pitch / 2
+        ys = (unit["y_lines"][0] - 7 * y_pitch / 6 + np.arange(2) * y_pitch / 2
               if position == "top" else
-              unit["y_lines"][-1] + 2 * pitch / 3 + np.arange(2) * pitch / 2)
+              unit["y_lines"][-1] + 2 * y_pitch / 3 + np.arange(2) * y_pitch / 2)
         sites = np.array([(x, y) for y in ys for x in xs])
         scores = [_spot_score(gray, x, y, small_center, small_ring, small_radius, sign)
                   for x, y in sites]
