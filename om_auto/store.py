@@ -8,10 +8,10 @@ SCHEMA = """
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS samples (
  sample_id TEXT PRIMARY KEY, recipe_id TEXT, notes TEXT, image_path TEXT,
- deleted_at TEXT);
+ deleted_at TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS regions (
  sample_id TEXT NOT NULL REFERENCES samples(sample_id), region_id TEXT NOT NULL,
- layout_type_id TEXT NOT NULL DEFAULT 'unknown',
+ layout_type_id TEXT NOT NULL DEFAULT 'unknown', reviewed_at TEXT,
  PRIMARY KEY(sample_id,region_id));
 CREATE TABLE IF NOT EXISTS layout_units (
  sample_id TEXT NOT NULL, region_id TEXT NOT NULL, layout_unit_id TEXT NOT NULL,
@@ -78,6 +78,12 @@ def connect(path):
     sample_columns = {r[1] for r in db.execute("PRAGMA table_info(samples)")}
     if "deleted_at" not in sample_columns:
         db.execute("ALTER TABLE samples ADD COLUMN deleted_at TEXT")
+    for column in ("created_at", "updated_at"):
+        if column not in sample_columns:
+            db.execute(f"ALTER TABLE samples ADD COLUMN {column} TEXT")
+    region_columns = {r[1] for r in db.execute("PRAGMA table_info(regions)")}
+    if "reviewed_at" not in region_columns:
+        db.execute("ALTER TABLE regions ADD COLUMN reviewed_at TEXT")
     pad_columns = {r[1] for r in db.execute("PRAGMA table_info(pads)")}
     if "pad_row" not in pad_columns:
         db.execute("ALTER TABLE pads ADD COLUMN pad_row INTEGER")
@@ -101,6 +107,65 @@ def connect(path):
 
 def rows(db, sql, params=()):
     return [dict(r) for r in db.execute(sql, params)]
+
+
+def touch_sample(db, sample_id):
+    db.execute("UPDATE samples SET updated_at=CURRENT_TIMESTAMP WHERE sample_id=?", (sample_id,))
+
+
+def invalidate_region_review(db, sample_id, region_id):
+    db.execute("UPDATE regions SET reviewed_at=NULL WHERE sample_id=? AND region_id=?",
+               (sample_id, region_id))
+    touch_sample(db, sample_id)
+
+
+def set_region_review(db, sample_id, region_id, confirmed):
+    if not isinstance(confirmed, bool):
+        raise ValueError("confirmed 须为布尔值")
+    region = rows(db, """SELECT r.region_id, count(p.pad_id) AS pad_count
+                         FROM regions r JOIN samples s ON s.sample_id=r.sample_id
+                         LEFT JOIN pads p ON p.sample_id=r.sample_id AND p.region_id=r.region_id
+                         WHERE r.sample_id=? AND r.region_id=? AND s.deleted_at IS NULL
+                         GROUP BY r.region_id""", (sample_id, region_id))
+    if not region:
+        raise ValueError("区域不存在或样品已删除")
+    if confirmed and not region[0]["pad_count"]:
+        raise ValueError("请先保存该区域的 Pad，再确认核对完成")
+    with db:
+        db.execute("""UPDATE regions SET reviewed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END
+                      WHERE sample_id=? AND region_id=?""", (int(confirmed), sample_id, region_id))
+        touch_sample(db, sample_id)
+    return {"region_id": region_id, "confirmed": confirmed}
+
+
+def sample_overview(db, query="", scope="active", page=1, page_size=25):
+    if scope not in {"active", "deleted"}:
+        raise ValueError("scope 仅支持 active/deleted")
+    try:
+        page, page_size = int(page), int(page_size)
+    except (TypeError, ValueError):
+        raise ValueError("分页参数须为整数") from None
+    if page < 1 or not 1 <= page_size <= 100:
+        raise ValueError("分页参数超出范围")
+    keyword = "%" + str(query).strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    where = "s.deleted_at IS " + ("NOT NULL" if scope == "deleted" else "NULL")
+    where += " AND (s.sample_id LIKE ? ESCAPE '\\' OR COALESCE(s.recipe_id,'') LIKE ? ESCAPE '\\')"
+    total = db.execute("SELECT count(*) FROM samples s WHERE " + where, (keyword, keyword)).fetchone()[0]
+    items = rows(db, """SELECT s.sample_id,s.recipe_id,s.notes,s.deleted_at,
+                          NULLIF(MAX(COALESCE(s.updated_at,''),COALESCE(s.created_at,''),
+                            COALESCE((SELECT max(i.created_at) FROM images i WHERE i.sample_id=s.sample_id),''),
+                            COALESCE((SELECT max(p.created_at) FROM plans p WHERE p.sample_id=s.sample_id),''),
+                            COALESCE((SELECT max(m.imported_at) FROM measurements m WHERE m.sample_id=s.sample_id),'')),
+                            '') AS last_activity_at,
+                          (SELECT count(*) FROM images i WHERE i.sample_id=s.sample_id) AS image_count,
+                          (SELECT count(*) FROM regions r WHERE r.sample_id=s.sample_id) AS region_count,
+                          (SELECT count(*) FROM regions r WHERE r.sample_id=s.sample_id AND r.reviewed_at IS NOT NULL) AS confirmed_region_count,
+                          (SELECT count(*) FROM pads p WHERE p.sample_id=s.sample_id) AS pad_count,
+                          (SELECT count(*) FROM plans p WHERE p.sample_id=s.sample_id) AS plan_count,
+                          (SELECT count(*) FROM measurements m WHERE m.sample_id=s.sample_id) AS measurement_count
+                          FROM samples s WHERE """ + where + " ORDER BY last_activity_at DESC, s.sample_id LIMIT ? OFFSET ?",
+                 (keyword, keyword, page_size, (page - 1) * page_size))
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 def region_boxes(db, sample_id, image_id):
@@ -139,6 +204,7 @@ def save_region_box(db, sample_id, image_id, region_id, box):
                       VALUES(?,?,'unknown')""", (sample_id, region_id))
         db.execute("""INSERT INTO region_boxes(sample_id,image_id,region_id,x1,y1,x2,y2)
                       VALUES(?,?,?,?,?,?,?)""", (sample_id, image_id, region_id, *coords))
+        invalidate_region_review(db, sample_id, region_id)
     return {"region_id": region_id, "box": coords}
 
 
@@ -151,6 +217,7 @@ def delete_region_box(db, sample_id, image_id, region_id):
             db.execute("""DELETE FROM candidate_edits
                           WHERE sample_id=? AND image_id=? AND region_id=?""",
                        (sample_id, image_id, region_id))
+            invalidate_region_review(db, sample_id, region_id)
     if not changed:
         raise ValueError("区域框不存在")
     return {"ok": True}
@@ -184,15 +251,21 @@ def save_candidate_edit(db, sample_id, image_id, region_id, action, x, y, width_
                             (sample_id,image_id,region_id,action,x,y,width_px,height_px)
                             VALUES(?,?,?,?,?,?,?,?)""",
                          (sample_id, image_id, region_id, action, x, y, width_px, height_px))
+        invalidate_region_review(db, sample_id, region_id)
     return rows(db, """SELECT edit_id,region_id,action,x,y,width_px,height_px,created_at
                        FROM candidate_edits WHERE edit_id=?""", (cur.lastrowid,))[0]
 
 
 def delete_candidate_edit(db, sample_id, image_id, edit_id):
     with db:
+        edit = rows(db, """SELECT region_id FROM candidate_edits
+                           WHERE sample_id=? AND image_id=? AND edit_id=?""",
+                    (sample_id, image_id, int(edit_id)))
         changed = db.execute("""DELETE FROM candidate_edits
                                 WHERE sample_id=? AND image_id=? AND edit_id=?""",
                              (sample_id, image_id, int(edit_id))).rowcount
+        if changed:
+            invalidate_region_review(db, sample_id, edit[0]["region_id"])
     if not changed:
         raise ValueError("候选修正不存在")
     return {"ok": True}
@@ -212,12 +285,12 @@ def pads(db, sample_id):
 
 
 def structure(db, sample_id):
-    region_rows = rows(db, """SELECT r.region_id,r.layout_type_id,
+    region_rows = rows(db, """SELECT r.region_id,r.layout_type_id,r.reviewed_at,
                               count(DISTINCT u.layout_unit_id) AS unit_count,
                               count(DISTINCT p.pad_id) AS pad_count
                               FROM regions r LEFT JOIN layout_units u ON u.sample_id=r.sample_id AND u.region_id=r.region_id
                               LEFT JOIN pads p ON p.sample_id=r.sample_id AND p.region_id=r.region_id
-                              WHERE r.sample_id=? GROUP BY r.region_id,r.layout_type_id ORDER BY r.region_id""", (sample_id,))
+                              WHERE r.sample_id=? GROUP BY r.region_id,r.layout_type_id,r.reviewed_at ORDER BY r.region_id""", (sample_id,))
     units = rows(db, """SELECT u.region_id,u.layout_unit_id,u.unit_row,u.unit_col,
                         count(p.pad_id) AS pad_count
                         FROM layout_units u LEFT JOIN pads p ON p.sample_id=u.sample_id AND p.region_id=u.region_id
@@ -254,6 +327,8 @@ def archive_sample(db, sample_id):
     with db:
         changed = db.execute("""UPDATE samples SET deleted_at=CURRENT_TIMESTAMP
                                 WHERE sample_id=? AND deleted_at IS NULL""", (sample_id,)).rowcount
+        if changed:
+            touch_sample(db, sample_id)
     if not changed:
         raise ValueError("样品不存在或已删除")
     return sample_counts(db, sample_id)
@@ -263,6 +338,8 @@ def restore_sample(db, sample_id):
     with db:
         changed = db.execute("""UPDATE samples SET deleted_at=NULL
                                 WHERE sample_id=? AND deleted_at IS NOT NULL""", (sample_id,)).rowcount
+        if changed:
+            touch_sample(db, sample_id)
     if not changed:
         raise ValueError("样品不存在或未删除")
     return sample_counts(db, sample_id)

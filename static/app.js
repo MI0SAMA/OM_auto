@@ -1,29 +1,215 @@
-const $=id=>document.getElementById(id);let state={sample:'',pads:[],groups:[],images:[],detected:[],candidate:null,image:null,plan:[]};
-const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function toast(msg,bad=false){let el=$('toast');el.textContent=msg;el.className='show'+(bad?' error':'');setTimeout(()=>el.className='',5000)}
-async function api(path,body){let r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});let d=await r.json();if(!r.ok)throw Error(d.error||r.statusText);return d}
-async function action(fn){try{await fn()}catch(e){toast(e.message,true)}}
-async function filePayload(id){let f=$(id).files[0];if(!f)throw Error('请先选择文件');let data=await new Promise((ok,fail)=>{let r=new FileReader();r.onload=()=>ok(r.result.split(',')[1]);r.onerror=fail;r.readAsDataURL(f)});return {filename:f.name,data}}
-function table(rows,fields){if(!rows.length)return '<p class="muted">暂无数据</p>';return `<div class="table-wrap"><table><thead><tr>${fields.map(f=>`<th>${esc(f)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${fields.map(f=>`<td>${esc(r[f])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
-async function loadSamples(){let s=await api('/api/samples');let old=state.sample;let sel=$('sampleSelect');sel.innerHTML=s.map(x=>`<option value="${esc(x.sample_id)}">${esc(x.sample_id)}</option>`).join('');state.sample=s.some(x=>x.sample_id===old)?old:(s[0]?.sample_id||'');sel.value=state.sample;await refresh()}
-async function refresh(){if(!state.sample){state.pads=[];state.groups=[];return}let q=encodeURIComponent(state.sample);let [p,g,m,plans,images,templates]=await Promise.all([api('/api/pads?sample_id='+q),api('/api/groups?sample_id='+q),api('/api/measurements?sample_id='+q),api('/api/plans?sample_id='+q),api('/api/images?sample_id='+q),api('/api/templates')]);state.pads=p;state.groups=g;state.images=images;renderPads();renderGroups();$('measurementTable').innerHTML=table(m,['pad_id','status','reviewed','pr_uc_cm2','ec_mv_cm','measured_at']);$('planHistory').innerHTML=plans.map(p=>`<p>方案 #${p.plan_id} · ${esc(p.created_at)} · ${esc(p.regions.join(','))} · ${p.count} 个 · 种子 ${p.seed} · <a href="/api/task.csv?plan_id=${p.plan_id}">下载任务 CSV</a></p>`).join('')||'<p class="muted">暂无方案</p>';$('imageSelect').innerHTML=images.map(i=>`<option value="${i.image_id}">${i.image_id.slice(0,8)} · ${i.width_px}×${i.height_px}</option>`).join('');$('templateSelect').innerHTML=templates.map(t=>`<option>${esc(t.name)}</option>`).join('');if(images.length){state.image=images[0].image_id;renderImage()}else $('imageStage').innerHTML='';await summary()}
-function renderPads(){let pp=state.pads.filter(p=>p.x!==null&&p.y!==null);if(pp.length){let minX=Math.min(...pp.map(p=>p.x)),minY=Math.min(...pp.map(p=>p.y)),maxX=Math.max(...pp.map(p=>p.x)),maxY=Math.max(...pp.map(p=>p.y));let sx=x=>30+((x-minX)/(maxX-minX||1))*740,sy=y=>30+((y-minY)/(maxY-minY||1))*420;let selected=new Set(state.plan.map(p=>p.pad_id));$('padPlot').innerHTML=`<svg viewBox="0 0 800 480" aria-label="Pad 空间分布">${pp.map(p=>`<circle cx="${sx(p.x)}" cy="${sy(p.y)}" r="${selected.has(p.pad_id)?8:5}" fill="${selected.has(p.pad_id)?'#ee7934':p.tested?'#778a97':p.usable?'#249a91':'#c64e55'}"><title>${esc(p.pad_id)} · ${esc(p.region_id)} / ${esc(p.layout_unit_id)}</title></circle>`).join('')}</svg><p class="muted">绿色可用，橙色选中，灰色已测，红色排除</p>`}else $('padPlot').innerHTML='<p class="muted">没有坐标记录</p>';$('padTable').innerHTML=table(state.pads,['pad_id','region_id','layout_unit_id','shape','diameter_um','width_um','height_um','area_um2','x','y','tested','usable'])}
-function renderGroups(){let sel=$('groupSelect');let current=sel.value;sel.innerHTML=state.groups.map(g=>`<option value="${g.id}">${g.id} ${g.shape} ${g.dimensions_um.map(x=>x.toFixed(1)).join('×')} µm · 可用 ${g.available}</option>`).join('');if(state.groups.some(g=>g.id===current))sel.value=current;let ag=$('analysisGroup'),ac=ag.value;ag.innerHTML='<option value="">全部规格（仅描述性）</option>'+state.groups.map(g=>`<option value="${g.id}">${g.id} ${g.shape} ${g.dimensions_um.map(x=>x.toFixed(1)).join('×')} µm</option>`).join('');ag.value=ac;let g=state.groups.find(x=>x.id===sel.value);$('groupInfo').innerHTML=g?`<p>总数 ${g.total}；已测 ${g.tested}；可用 ${g.available}；覆盖 ${g.regions.length} 个 Region、${g.unit_count} 个 Unit</p>`:'<p class="muted">无已知尺寸的几何组</p>';if(g&&!$('regions').value)$('regions').value=g.regions.join(',')}
-function renderImage(){let id=$('imageSelect').value||state.image;if(!id)return;state.image=id;let item=state.images.find(i=>i.image_id===id);if(!item)return;let marks=state.detected.map((p,i)=>`<circle data-i="${i}" cx="${p.x}" cy="${p.y}" r="${Math.max(6,Math.min(p.width_px,p.height_px)/2)}" fill="#46d4a433" stroke="#20bfa3" stroke-width="2" class="${state.candidate===i?'active':''}"><title>候选 ${i+1}</title></circle><text x="${p.x}" y="${p.y}" text-anchor="middle" fill="#052d38" stroke="white" stroke-width="3" paint-order="stroke">${i+1}</text>`).join('');$('imageStage').innerHTML=`<img src="/api/image?image_id=${id}" alt="OM 图像"><svg viewBox="0 0 ${item.width_px} ${item.height_px}" preserveAspectRatio="none">${marks}</svg>`;$('imageStage').querySelectorAll('circle').forEach(c=>c.addEventListener('click',()=>{state.candidate=Number(c.dataset.i);let p=state.detected[state.candidate];$('candidateInfo').textContent=`候选 ${state.candidate+1}: x=${p.x}, y=${p.y}, ${p.width_px}×${p.height_px} px, 预测 ${p.shape_guess}`;$('omShape').value=p.shape_guess;$('omLocal').value='P'+String(state.candidate+1).padStart(2,'0');renderImage()}));$('imageStage').querySelector('img').addEventListener('click',e=>{let box=e.target.getBoundingClientRect();$('manualX').value=((e.clientX-box.left)/box.width*item.width_px).toFixed(1);$('manualY').value=((e.clientY-box.top)/box.height*item.height_px).toFixed(1)})}
-async function summary(){if(!state.sample)return;let q='sample_id='+encodeURIComponent(state.sample);let regions=$('analysisRegions').value.trim();if(regions)q+='&regions='+encodeURIComponent(regions);let group=$('analysisGroup').value;if(group)q+='&group_id='+encodeURIComponent(group);let s=await api('/api/summary?'+q);let pct=x=>x===null?'—':(x*100).toFixed(1)+'%';let metric=(name,m,unit)=>`<div class="stat">${name}<strong>${m?m.mean.toFixed(2):'—'}</strong>${unit} · 有效数据 ${m?.n||0}</div>`;$('summary').innerHTML=`<div class="stat">已测<strong>${s.tested}</strong>Pad</div><div class="stat">有效<strong>${s.valid}</strong>${pct(s.valid_rate)}</div><div class="stat">有效率 95% Wilson CI<strong>${s.valid_rate_ci95?s.valid_rate_ci95.map(pct).join('–'):'—'}</strong></div><div class="stat">击穿率<strong>${pct(s.breakdown_rate)}</strong></div>${metric('Pr',s.pr_uc_cm2,'µC/cm²')}${metric('Ec',s.ec_mv_cm,'MV/cm')}<p>${esc(s.note)}</p><h2>状态计数</h2>${table(Object.entries(s.status_counts).map(([status,count])=>({status,count})),['status','count'])}<h2>各区域</h2>${table(Object.entries(s.by_region).map(([region,x])=>({region,...x,rate:pct(x.rate)})),['region','tested','valid','rate'])}`}
-document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button,.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active')});
-$('sampleSelect').onchange=()=>{state.sample=$('sampleSelect').value;$('regions').value='';state.plan=[];action(refresh)};
-$('createSample').onclick=()=>action(async()=>{await api('/api/samples',{sample_id:$('newSample').value.trim(),recipe_id:$('recipe').value,notes:$('notes').value});await loadSamples();state.sample=$('newSample').value.trim();$('sampleSelect').value=state.sample;await refresh();toast('样品已创建')});
-$('importPads').onclick=()=>action(async()=>{let f=await filePayload('padFile');let r=await api('/api/import-pads',{...f,sample_id:state.sample});await refresh();toast(`导入 ${r.imported} 个 Pad`)});
-$('saveTemplate').onclick=()=>action(async()=>{let r=await api('/api/templates',{sample_id:state.sample,name:$('templateName').value.trim()});await refresh();toast(`模板已保存：${r.saved} 个 Pad`)});
-$('applyTemplate').onclick=()=>action(async()=>{let r=await api('/api/apply-template',{sample_id:state.sample,name:$('templateSelect').value});await refresh();toast(`模板已应用：${r.imported} 个 Pad`)});
-$('groupSelect').onchange=renderGroups;
-$('makePlan').onclick=()=>action(async()=>{let body={sample_id:state.sample,group_id:$('groupSelect').value,regions:$('regions').value.split(',').map(x=>x.trim()).filter(Boolean),count:Number($('sampleCount').value),seed:Number($('seed').value)};let r=await api('/api/plans',body);state.plan=r.pads;renderPads();$('planResult').innerHTML=`<p>方案 #${r.plan_id} · ${Object.entries(r.allocation).map(([k,v])=>`${esc(k)}: ${v}`).join('；')}</p><a href="/api/task.csv?plan_id=${r.plan_id}">下载任务 CSV</a>${table(r.pads,['pad_id','region_id','layout_unit_id','pad_local_id','shape','x','y'])}`;await refresh();toast('抽样方案已保存')});
-$('importMeasurements').onclick=()=>action(async()=>{let f=await filePayload('measureFile');let r=await api('/api/import-measurements',{...f,sample_id:state.sample});await refresh();toast(`导入 ${r.imported} 条测试记录`)});
-$('refreshSummary').onclick=()=>action(summary);
-$('uploadImage').onclick=()=>action(async()=>{let f=await filePayload('imageFile');let r=await api('/api/image',{...f,sample_id:state.sample});await refresh();$('imageSelect').value=r.image_id;state.image=r.image_id;renderImage();toast('图像已保存')});
-$('imageSelect').onchange=()=>{state.detected=[];state.candidate=null;renderImage()};
-$('detect').onclick=()=>action(async()=>{state.image=$('imageSelect').value;let r=await api('/api/detect',{image_id:state.image,polarity:$('polarity').value,min_size:Number($('minCandidate').value),max_size:Number($('maxCandidate').value)});state.detected=r.candidates;state.candidate=null;$('detectNote').textContent=`找到 ${r.candidates.length} 个候选。${r.warning}`;renderImage()});
-$('manualCandidate').onclick=()=>action(async()=>{let x=Number($('manualX').value),y=Number($('manualY').value),width_px=Number($('manualWidth').value),height_px=Number($('manualHeight').value);if(![x,y,width_px,height_px].every(Number.isFinite)||width_px<=0||height_px<=0)throw Error('请填写中心和正的像素宽高');state.detected.push({x,y,width_px,height_px,shape_guess:'other',fill:null});state.candidate=state.detected.length-1;renderImage();$('candidateInfo').textContent=`手动候选 ${state.candidate+1}: x=${x}, y=${y}, ${width_px}×${height_px} px`});
-$('confirmCandidate').onclick=()=>action(async()=>{let p=state.detected[state.candidate];if(!p)throw Error('请先点击图上的候选');let scale=Number($('umPerPx').value);if(!(scale>0))throw Error('请先填写有效的 µm/像素 标尺');let region=$('omRegion').value.trim(),unit=$('omUnit').value.trim(),local=$('omLocal').value.trim();if(!region||!unit||!local)throw Error('Region、Unit、局部 ID 均必填');let shape=$('omShape').value;let row={pad_id:[state.sample,region,unit,local].join(':'),region_id:region,layout_unit_id:unit,pad_local_id:local,shape,x:p.x,y:p.y,image_id:state.image,area_source:'OM calibration',area_confidence:'manual-reviewed'};if(shape==='circle')row.diameter_um=((p.width_px+p.height_px)/2)*scale;else{row.width_um=p.width_px*scale;row.height_um=p.height_px*scale}await api('/api/pads',{sample_id:state.sample,rows:[row]});await refresh();toast('Pad 已保存；请复核位置与标尺')});
-action(loadSamples);
+/* Shared browser state, API helpers, and read-only view helpers. */
+const $ = id => document.getElementById(id);
+const state = {sample: '', pads: [], groups: [], images: [], detected: [], candidate: null,
+  image: null, plan: []};
+
+const esc = value => String(value ?? '').replace(/[&<>"']/g, char =>
+  ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
+
+function toast(message, bad = false) {
+  const element = $('toast');
+  element.textContent = message;
+  element.className = 'show' + (bad ? ' error' : '');
+  setTimeout(() => { element.className = ''; }, 5000);
+}
+
+async function api(path, body) {
+  const response = await fetch(path, body ? {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  } : {});
+  const data = await response.json();
+  if (!response.ok) throw Error(data.error || response.statusText);
+  return data;
+}
+
+async function action(fn) {
+  try { await fn(); }
+  catch (error) { toast(error.message, true); }
+}
+
+async function filePayload(id) {
+  const file = $(id).files[0];
+  if (!file) throw Error('请先选择文件');
+  const data = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+  return {filename: file.name, data};
+}
+
+function table(records, fields) {
+  if (!records.length) return '<p class="muted">暂无数据</p>';
+  const head = fields.map(field => `<th>${esc(field)}</th>`).join('');
+  const body = records.map(record => `<tr>${fields.map(field =>
+    `<td>${esc(record[field])}</td>`).join('')}</tr>`).join('');
+  return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+function renderPadTable() {
+  const details = document.querySelector('.pad-table-details');
+  if (!details?.open) { $('padTable').innerHTML = ''; return; }
+  $('padTable').innerHTML = table(state.pads, ['pad_id', 'region_id', 'layout_type_id',
+    'layout_unit_id', 'unit_row', 'unit_col', 'pad_local_id', 'pad_row', 'pad_col',
+    'shape', 'diameter_um', 'width_um', 'height_um', 'area_um2', 'tested', 'usable']);
+}
+
+async function fetchSampleData(sampleId) {
+  const query = encodeURIComponent(sampleId);
+  const [pads, groups, measurements, plans, images, templates] = await Promise.all([
+    api('/api/pads?sample_id=' + query),
+    api('/api/groups?sample_id=' + query),
+    api('/api/measurements?sample_id=' + query),
+    api('/api/plans?sample_id=' + query),
+    api('/api/images?sample_id=' + query),
+    api('/api/templates')
+  ]);
+  return {pads, groups, measurements, plans, images, templates};
+}
+
+async function loadSamples() {
+  const samples = await api('/api/samples');
+  state.availableSamples = samples.map(sample => sample.sample_id);
+  const previous = state.initialized ? state.sample :
+    (new URLSearchParams(window.location.search).get('sample') || '');
+  const select = $('sampleSelect');
+  select.innerHTML = '<option value="">选择样品</option>' + samples.map(sample =>
+    `<option value="${esc(sample.sample_id)}">${esc(sample.sample_id)}</option>`).join('');
+  state.sample = samples.some(sample => sample.sample_id === previous)
+    ? previous : '';
+  select.value = state.sample;
+  await refresh();
+  await refreshDeletedSamples();
+}
+
+function renderFallbackPads() {
+  const located = state.pads.filter(pad => pad.x !== null && pad.y !== null);
+  if (!located.length) {
+    $('padPlot').innerHTML = '<p class="muted">没有坐标记录</p>';
+  } else {
+    const xs = located.map(pad => pad.x), ys = located.map(pad => pad.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const sx = x => 30 + (x - minX) / (maxX - minX || 1) * 740;
+    const sy = y => 30 + (y - minY) / (maxY - minY || 1) * 420;
+    const chosen = new Set(state.plan.map(pad => pad.pad_id));
+    const marks = located.map(pad => `<circle cx="${sx(pad.x)}" cy="${sy(pad.y)}" r="${chosen.has(pad.pad_id) ? 8 : 5}" fill="${chosen.has(pad.pad_id) ? '#ee7934' : pad.tested ? '#778a97' : pad.usable ? '#249a91' : '#c64e55'}"><title>${esc(pad.pad_id)} · ${esc(pad.region_id)} / ${esc(pad.layout_unit_id)}</title></circle>`).join('');
+    const zoom = Number($('padMapZoom').value) || 1;
+    const width = Math.max(800, $('padPlot').clientWidth - 20) * zoom;
+    $('padPlot').innerHTML = `<div class="pad-map-canvas" style="width:${width}px;height:${width * .6}px"><svg viewBox="0 0 800 480" aria-label="Pad 空间分布">${marks}</svg></div><p class="muted">绿色可用，橙色选中，灰色已测，红色排除</p>`;
+  }
+  renderPadTable();
+}
+
+function enableCanvasPanZoom(viewport, slider, render, {leftDrag = true} = {}) {
+  let drag = null;
+  let suppressClick = false;
+  let wheelFrame = 0;
+  let pendingZoom = null;
+  let wheelPoint = null;
+
+  viewport.addEventListener('dragstart', event => event.preventDefault());
+  viewport.addEventListener('mousedown', event => {
+    if (event.button === 1) event.preventDefault();
+  });
+  viewport.addEventListener('auxclick', event => {
+    if (event.button === 1) event.preventDefault();
+  });
+  viewport.addEventListener('pointerdown', event => {
+    if (event.pointerType === 'touch' || (event.button !== 1 && !(leftDrag && event.button === 0))) return;
+    const middle = event.button === 1;
+    drag = {id: event.pointerId, x: event.clientX, y: event.clientY,
+      left: viewport.scrollLeft, top: viewport.scrollTop, moved: middle, middle};
+    if (middle) {
+      event.preventDefault();
+      viewport.classList.add('is-panning');
+      viewport.setPointerCapture(event.pointerId);
+    }
+  });
+  viewport.addEventListener('pointermove', event => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 5) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      viewport.classList.add('is-panning');
+      viewport.setPointerCapture(event.pointerId);
+    }
+    viewport.scrollLeft = drag.left - dx;
+    viewport.scrollTop = drag.top - dy;
+    event.preventDefault();
+  });
+  function stopPan(event) {
+    if (!drag || event.pointerId !== drag.id) return;
+    if (drag.moved && !drag.middle) {
+      suppressClick = true;
+      setTimeout(() => { suppressClick = false; }, 0);
+    }
+    viewport.classList.remove('is-panning');
+    if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+    drag = null;
+  }
+  viewport.addEventListener('pointerup', stopPan);
+  viewport.addEventListener('pointercancel', stopPan);
+  viewport.addEventListener('click', event => {
+    if (!suppressClick) return;
+    suppressClick = false;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+  viewport.addEventListener('wheel', event => {
+    if (!viewport.querySelector('.image-canvas, .pad-map-canvas')) return;
+    event.preventDefault();
+    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1);
+    const current = pendingZoom ?? Number(slider.value);
+    pendingZoom = Math.max(Number(slider.min), Math.min(Number(slider.max), current * Math.exp(-delta * .0015)));
+    wheelPoint = {x: event.clientX, y: event.clientY};
+    if (wheelFrame) return;
+    wheelFrame = requestAnimationFrame(() => {
+      wheelFrame = 0;
+      const oldCanvas = viewport.querySelector('.image-canvas, .pad-map-canvas');
+      if (!oldCanvas) { pendingZoom = null; return; }
+      const oldRect = oldCanvas.getBoundingClientRect();
+      const anchorX = wheelPoint.x - oldRect.left;
+      const anchorY = wheelPoint.y - oldRect.top;
+      slider.value = pendingZoom.toFixed(2);
+      pendingZoom = null;
+      render();
+      const newCanvas = viewport.querySelector('.image-canvas, .pad-map-canvas');
+      if (!newCanvas) return;
+      const newRect = newCanvas.getBoundingClientRect();
+      viewport.scrollLeft += newRect.left + anchorX * newRect.width / oldRect.width - wheelPoint.x;
+      viewport.scrollTop += newRect.top + anchorY * newRect.height / oldRect.height - wheelPoint.y;
+    });
+  }, {passive: false});
+}
+
+function renderGroups() {
+  const select = $('groupSelect'), current = select.value;
+  select.innerHTML = state.groups.map(group =>
+    `<option value="${group.id}">${group.id} ${group.shape} ${group.dimensions_um.map(size => size.toFixed(1)).join('×')} µm · 可用 ${group.available}</option>`).join('');
+  if (state.groups.some(group => group.id === current)) select.value = current;
+  const analysis = $('analysisGroup'), analysisCurrent = analysis.value;
+  analysis.innerHTML = '<option value="">全部规格（仅描述性）</option>' + state.groups.map(group =>
+    `<option value="${group.id}">${group.id} ${group.shape} ${group.dimensions_um.map(size => size.toFixed(1)).join('×')} µm</option>`).join('');
+  analysis.value = analysisCurrent;
+  const group = state.groups.find(item => item.id === select.value);
+  $('groupInfo').innerHTML = group
+    ? `<p>总数 ${group.total}；已测 ${group.tested}；可用 ${group.available}；覆盖 ${group.regions.length} 个 Region、${group.unit_count} 个 Unit</p>`
+    : '<p class="muted">无已知尺寸的几何组</p>';
+  if (group && !$('regions').value) $('regions').value = group.regions.join(',');
+}
+
+async function summary() {
+  if (!state.sample) return;
+  let query = 'sample_id=' + encodeURIComponent(state.sample);
+  const regions = $('analysisRegions').value.trim();
+  if (regions) query += '&regions=' + encodeURIComponent(regions);
+  const group = $('analysisGroup').value;
+  if (group) query += '&group_id=' + encodeURIComponent(group);
+  const result = await api('/api/summary?' + query);
+  const percent = value => value === null ? '—' : (value * 100).toFixed(1) + '%';
+  const metric = (name, data, unit) => `<div class="stat">${name}<strong>${data ? data.mean.toFixed(2) : '—'}</strong>${unit} · 有效数据 ${data?.n || 0}</div>`;
+  $('summary').innerHTML = `<div class="stat">已测<strong>${result.tested}</strong>Pad</div><div class="stat">有效<strong>${result.valid}</strong>${percent(result.valid_rate)}</div><div class="stat">有效率 95% Wilson CI<strong>${result.valid_rate_ci95 ? result.valid_rate_ci95.map(percent).join('–') : '—'}</strong></div><div class="stat">击穿率<strong>${percent(result.breakdown_rate)}</strong></div>${metric('Pr', result.pr_uc_cm2, 'µC/cm²')}${metric('Ec', result.ec_mv_cm, 'MV/cm')}<p>${esc(result.note)}</p><h2>状态计数</h2>${table(Object.entries(result.status_counts).map(([status, count]) => ({status, count})), ['status', 'count'])}<h2>各区域</h2>${table(Object.entries(result.by_region).map(([region, data]) => ({region, ...data, rate: percent(data.rate)})), ['region', 'tested', 'valid', 'rate'])}`;
+}

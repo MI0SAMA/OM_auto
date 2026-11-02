@@ -1,0 +1,25 @@
+/* The whole-sample photograph anchors coordinates and the selected-pad map. */
+state.regionBoxes = [];
+state.candidateEdits = [];
+state.latticeStats = {};
+state.roiMode = false;
+state.focusBox = null;
+state.addPointMode = false;
+state.scaleBarImage = null;
+state.scaleBar = null;
+state.scaleDrawMode = false;
+state.manualScaleLine = null;
+state.primaryRegionBoxes = [];
+state.padMapRegion = '';
+state.padMapActiveId = null;
+state.currentPlanId = null;
+state.planDraftDirty = false;
+state.samplingSample = null;
+state.initialized = false;
+state.candidatesDirty = false;
+state.rotationApplying = false;
+state.detecting = false;
+state.structure = [];
+state.measurements = [];
+state.plans = [];
+state.availableSamples = [];

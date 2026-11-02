@@ -30,8 +30,8 @@ def inspect_image(data):
     image = Image.open(BytesIO(data))
     image.verify()
     image = Image.open(BytesIO(data))
-    if image.width * image.height > 80_000_000:
-        raise ValueError("图像超过 8000 万像素")
+    if image.width * image.height > 100_000_000:
+        raise ValueError(f"图像为 {image.width}×{image.height} 像素，超过 1 亿像素上限")
     return image.width, image.height
 
 

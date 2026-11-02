@@ -1,10 +1,779 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OM Auto · Pad 抽样</title><link rel="stylesheet" href="/style.css"></head><body>
-<header><div><strong>OM Auto</strong><span>薄膜 Pad 识别与空间抽样</span></div><div class="header-actions"><select id="sampleSelect" aria-label="选择样品"></select><button id="deleteSample" class="danger" type="button">删除样品</button></div></header>
-<nav><button data-tab="samples" class="active">样品与版图</button><button data-tab="om">OM 图像</button><button data-tab="sample">算法选点</button><button data-tab="results">结果录入</button><button data-tab="analysis">统计分析</button></nav>
-<main>
-<section id="samples" class="tab active"><h1>样品与版图</h1><div class="grid"><article><h2>新建样品</h2><label>样品 ID<input id="newSample" placeholder="例如 AlScN-001"></label><label>工艺编号<input id="recipe"></label><label>备注<input id="notes"></label><button id="createSample">创建</button></article><article><h2>导入 Pad</h2><p>CSV/XLSX 字段见 README。导入按 Pad ID 严格校验；不会覆盖已有 Pad。</p><input type="file" id="padFile" accept=".csv,.xlsx,.xlsm"><button id="importPads">导入</button><p><a href="/templates/pads.csv" download>模板见项目 templates/pads.csv</a></p></article><article><h2>版图模板</h2><label>模板名<input id="templateName" placeholder="同版图可跨样品复用"></label><button id="saveTemplate">保存当前版图</button><select id="templateSelect" aria-label="选择版图模板"></select><div class="template-actions"><button id="applyTemplate">应用到当前样品</button><button id="deleteTemplate" class="danger" type="button" disabled>删除选中模板</button></div></article><article><h2>已删除样品</h2><p class="muted">删除会从样品列表移走记录；图片、Pad 和测试记录仍可恢复。</p><select id="deletedSelect" aria-label="已删除样品"></select><button id="restoreSample" type="button">恢复选中样品</button></article></div><article><h2>样品层级：区域 → 重复版图 → Pad 行列</h2><div id="sampleStructure"></div></article><article><h2>Pad 分布</h2><p class="muted">按整片主图的原始像素坐标显示区域相对位置；点击 Pad 可在图上显示所属重复版图内的序号和编号。</p><div class="pad-map-toolbar"><label>区域<select id="padMapFocus"><option value="">整片</option></select></label><label>缩放<input id="padMapZoom" type="range" min="1" max="8" step="0.5" value="1"></label><button id="padMapReset" type="button">整片视图</button><label class="pad-map-checkbox"><input id="padMapShowImage" type="checkbox" checked>显示主图</label></div><div id="padMapLegend" class="plan-legend"></div><div id="padPlot" class="plot pad-map-viewport"></div><p id="padMapInfo" class="pad-inspect muted">点击 Pad 查看区域、版图和行列编号。</p><div id="padTable"></div></article></section>
-<section id="om" class="tab"><h1>整片 OM 主图与辅助标号</h1><div class="grid"><article><h2>图像</h2><input type="file" id="imageFile" accept="image/png,image/jpeg"><button id="uploadImage">上传到当前样品</button><select id="imageSelect"></select><button id="setPrimary">设为整片主图</button><label>缩放<input id="imageZoom" type="range" min="0.1" max="16" step="0.1" value="1"></label><label>新区域 ID<input id="newRegionId" value="R1" placeholder="例如 R1"></label><button id="selectRoi">添加区域框（画完自动保存）</button><p id="imageRole" class="muted"></p><p class="muted">ZHENGPIAN.jpg 自动作为主图；其他图供局部核对。整片图在完整缩略图上框选范围，放大图用于查看细节。</p></article><article><h2>候选识别</h2><label>对比度极性<select id="polarity"><option value="light">亮色 Pad</option><option value="dark">暗色 Pad</option></select></label><label>最小候选直径 px<input id="minCandidate" type="number" value="8" min="1"></label><label>最大候选直径 px<input id="maxCandidate" type="number" value="80" min="2"></label><button id="detect">识别全部区域</button><div id="detectProgress" class="detect-progress" hidden role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>识别中，请稍候…</span><progress aria-label="候选识别中"></progress></div><label class="checkbox-row"><input id="showReviewCandidates" type="checkbox">无规则版图时显示原始待复核点（橙色）</label><p class="muted">请检查紫色和灰色格点，必要时删点或补点；像素尺寸不能直接当 µm。</p></article><article><h2>批量保存 Pad</h2><p class="muted">识别并完成修正后，程序从主图标尺自动换算 µm/像素；核对读数后可直接批量保存。规则格点自动生成行列编号，人工补点自动编号。</p><label>版图类型 ID<input id="omLayoutType" value="L1" placeholder="默认 L1；同一区域统一使用"></label><label>主图标尺 µm/像素<input id="umPerPx" type="number" step="any" min="0" placeholder="自动读取主图标尺；可人工修正"></label><p id="scaleBarInfo" class="muted">选择整片主图后自动读取图中标尺。</p><button id="saveAllCandidates" type="button">保存全部已核对候选为 Pad</button><p id="batchSaveNote" class="muted">尚未批量保存。</p><button id="removeCandidate" type="button" class="minor" disabled>删除选中候选点</button><p id="candidateInfo" class="muted">尚未选中候选</p><details><summary>单点编号与特殊形状（高级）</summary><label>区域 ID<input id="omRegion" value="R1"></label><label>重复版图 ID<input id="omUnit" value="U1"></label><div class="grid-pair"><label>版图所在行<input id="omUnitRow" type="number" min="1" step="1"></label><label>版图所在列<input id="omUnitCol" type="number" min="1" step="1"></label></div><label>Pad 局部 ID<input id="omLocal" placeholder="r03c05"></label><div class="grid-pair"><label>Pad 行<input id="omPadRow" type="number" min="1" step="1"></label><label>Pad 列<input id="omPadCol" type="number" min="1" step="1"></label></div><label>形状<select id="omShape"><option value="circle">圆形</option><option value="square">方形</option><option value="other">其他</option></select></label><button id="confirmCandidate">单点保存 Pad</button></details></article><article><h2>手动补充候选</h2><p class="muted">点击图片设置中心，再输入边框像素宽高。</p><label>中心 X px<input id="manualX" type="number" step="any"></label><label>中心 Y px<input id="manualY" type="number" step="any"></label><label>宽 px<input id="manualWidth" type="number" step="any"></label><label>高 px<input id="manualHeight" type="number" step="any"></label><button id="manualCandidate">按坐标补点并保存</button><button id="clickAddCandidate" type="button">点击放大图补点</button><p class="muted">点图补点时，宽高默认取该区域候选的中位数；可先填写上方宽高覆盖。</p></article></div><article><h2>整图框选</h2><p class="muted">输入区域 ID，点击“添加区域框”，在完整缩略图上拖动。每个框对应一个区域，可逐框识别；下方放大图用于核对候选。</p><div id="overviewStage" class="overview-stage"></div><div id="regionBoxList" class="region-box-list"></div><div id="candidateEditList" class="region-box-list"></div><div class="save-guide"><strong>保存说明</strong><p>画完区域框会自动保存到当前样品，刷新后仍在。识别得到的候选刷新后需重新识别；手工删点、补点会保存，重新识别时继续生效。绿色为图像检测到的规则格点，紫色为有图像信号的补漏格点，灰色为空间布局推断位置，蓝色为人工补点。规则版图的原始橙色散点已从结果移除；紫色和灰色点仍须人工核验。选中错误候选可点“删除选中候选点”，也可在放大图直接点击遗漏 Pad 补点；下方的人工修正可撤销。核对完候选和自动标尺读数后，点击“保存全部已核对候选为 Pad”即可批量入库，不必逐点选择。系统保留识别置信来源；人工补点以 U-MANUAL/M编号保存，可在高级区域单点指定正式编号。已有 Pad 不会被自动覆盖；删除候选点或区域框不会删除已保存的 Pad。</p></div><h2>放大查看 <small id="viewingRegion" class="muted"></small></h2><div class="image-edit-toolbar"><button id="clickAddCandidateHere" type="button">点图补点</button><button id="removeCandidateHere" type="button" class="minor" disabled>删除选中点</button><label class="checkbox-row"><input id="showOmCandidates" type="checkbox" checked>显示候选点</label><label class="checkbox-row"><input id="showOmOutlines" type="checkbox">显示尺寸轮廓</label><label class="checkbox-row"><input id="showSavedPads" type="checkbox">显示已保存 Pad</label><span class="muted">默认只画小点；点击附近可选中，补点模式下点击遗漏 Pad 的中心。</span></div><div id="imageStage" class="image-stage"></div><p id="detectNote" aria-live="polite"></p></article></section>
-<section id="sample" class="tab"><h1>空间分层选点</h1><div class="grid"><article><label>选点方式<select id="samplingMode"><option value="region">按区域与重复版图</option><option value="geometry">按几何规格</option></select></label><div id="geometryFilter" hidden><label>几何规格<select id="groupSelect"></select></label><div id="groupInfo"></div></div><div class="sampling-regions-title">选择区域</div><div id="samplingRegionChoices" class="sampling-regions"></div><input id="regions" type="hidden"><label class="checkbox-row"><input id="includeLayoutOnly" type="checkbox" checked>纳入灰色空心推断点（须先核实）</label><p class="muted">区域内优先选不同重复版图，再分散到不同位置；默认跳过已测和排除点；灰色空心推断点默认纳入，请逐点核验。</p><label>测点数量<input id="sampleCount" type="number" min="1" value="9"></label><label>随机种子<input id="seed" type="number" value="2026"></label><button id="makePlan">生成并保存清单</button><button id="savePlanEdits" type="button" disabled>将图上选择另存为新方案</button><p class="muted">生成后点击图中的 Pad 可取消或加入；原方案保留，修改后的清单需另存。</p></article><article><h2>选点清单</h2><div id="planResult"></div></article></div><article><h2>选点可视化</h2><div class="plan-toolbar"><label>缩放<input id="planZoom" type="range" min="1" max="8" step="0.5" value="1"></label><button id="planReset" type="button">重置视图</button><label><input id="planShowTested" type="checkbox" checked>显示已测</label><label><input id="planShowExcluded" type="checkbox" checked>显示排除</label></div><div id="planLegend" class="plan-legend"></div><div id="planImage" class="plan-image"></div><div id="padInspect" class="pad-inspect muted">点击图中的 Pad 可加入或取消当前清单。</div></article><article><h2>已保存方案</h2><div id="planHistory"></div></article></section>
-<section id="results" class="tab"><h1>电学结果录入</h1><article><p>按 pad_id 匹配，原始导入行会保存。status：valid / no_response / breakdown / leakage / test_error。Pr 单位 µC/cm²；Ec 单位 MV/cm。</p><input type="file" id="measureFile" accept=".csv,.xlsx,.xlsm"><button id="importMeasurements">导入结果</button><div id="measurementTable"></div></article></section>
-<section id="analysis" class="tab"><h1>统计分析</h1><article><label>几何组<select id="analysisGroup"><option value="">全部规格（仅描述性）</option></select></label><label>评价区域（留空代表全部）<input id="analysisRegions" placeholder="R1,R2"></label><button id="refreshSummary">计算</button><div id="summary"></div></article></section>
-</main><div id="toast" role="status"></div><script src="/app.js"></script><script src="/primary.js"></script></body></html>
+<!DOCTYPE html>
+<html lang="zh-CN">
+ <head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width,initial-scale=1" name="viewport"/>
+  <title>
+   OM Auto · Pad 抽样
+  </title>
+  <link href="/favicon.svg" rel="icon" type="image/svg+xml"/>
+  <link href="/style.css" rel="stylesheet"/>
+ </head>
+ <body>
+  <header>
+   <div>
+    <strong>
+     OM Auto
+    </strong>
+    <span>
+     薄膜 Pad 识别与空间抽样
+    </span>
+   </div>
+   <div class="header-actions">
+    <button class="header-home" id="homeButton" type="button">
+     样品列表
+    </button>
+    <select aria-label="选择样品" id="sampleSelect">
+    </select>
+   </div>
+  </header>
+  <nav>
+   <button data-tab="samples" type="button">
+    1 建档与主图
+   </button>
+   <button data-tab="om" type="button">
+    2 区域识别
+   </button>
+   <button data-tab="review" type="button">
+    3 核对与保存
+   </button>
+   <button data-tab="sample" type="button">
+    4 选点
+   </button>
+   <button data-tab="results" type="button">
+    5 结果与分析
+   </button>
+  </nav>
+  <main>
+   <section class="tab active" id="library">
+    <div class="page-heading">
+     <div>
+      <span class="eyebrow">
+       样品工作台
+      </span>
+      <h1>
+       样品列表
+      </h1>
+      <p>
+       查找已有样品，或为新到的样品建立记录。
+      </p>
+     </div>
+    </div>
+    <div class="library-grid">
+     <article class="create-card">
+      <h2>
+       新建样品
+      </h2>
+      <label>
+       样品 ID
+       <input id="newSample" placeholder="例如 AlScN-001"/>
+      </label>
+      <label>
+       工艺编号
+       <input id="recipe"/>
+      </label>
+      <label>
+       备注
+       <input id="notes"/>
+      </label>
+      <button id="createSample">
+       创建
+      </button>
+     </article>
+     <article class="history-card">
+      <div class="section-heading">
+       <div>
+        <h2>
+         历史样品
+        </h2>
+        <p class="muted">
+         查看区域核对、Pad、方案及测试进度。
+        </p>
+       </div>
+      </div>
+      <div class="history-controls">
+       <label>
+        搜索样品或工艺编号
+        <input id="historySearch" placeholder="输入样品 ID 或工艺编号" type="search"/>
+       </label>
+       <label>
+        范围
+        <select id="historyScope">
+         <option value="active">
+          在用样品
+         </option>
+         <option value="deleted">
+          已删除样品
+         </option>
+        </select>
+       </label>
+      </div>
+      <div aria-live="polite" id="historyList">
+      </div>
+      <div class="history-pager">
+       <button class="minor" id="historyPrev" type="button">
+        上一页
+       </button>
+       <span id="historyPageInfo">
+       </span>
+       <button class="minor" id="historyNext" type="button">
+        下一页
+       </button>
+      </div>
+     </article>
+     <article>
+      <h2>
+       样品管理
+      </h2>
+      <button class="danger" id="deleteSample" type="button">
+       删除样品
+      </button>
+      <p class="muted">
+       删除会从样品列表移走记录；图片、Pad 和测试记录仍可恢复。
+      </p>
+      <select aria-label="已删除样品" id="deletedSelect">
+      </select>
+      <button id="restoreSample" type="button">
+       恢复选中样品
+      </button>
+     </article>
+    </div>
+    <article class="library-pad-map" hidden="" id="libraryPadMap">
+     <h2>
+      Pad 分布
+     </h2>
+     <p class="muted" id="libraryPadMapTitle">
+     </p>
+     <p class="muted">
+      按整片主图的原始像素坐标显示区域相对位置；点击 Pad 可在图上显示所属重复版图内的序号和编号。
+     </p>
+     <div class="pad-map-toolbar">
+      <label>
+       区域
+       <select id="padMapFocus">
+        <option value="">
+         整片
+        </option>
+       </select>
+      </label>
+      <label>
+       缩放
+       <input id="padMapZoom" max="8" min="1" step="0.01" type="range" value="1"/>
+      </label>
+      <button id="padMapReset" type="button">
+       整片视图
+      </button>
+      <label class="pad-map-checkbox">
+       <input checked="" id="padMapShowImage" type="checkbox"/>
+       显示主图
+      </label>
+     </div>
+     <div class="plan-legend" id="padMapLegend">
+     </div>
+     <div class="plot pad-map-viewport" id="padPlot">
+     </div>
+     <p class="canvas-help muted">滚轮在指针处缩放；按住滚轮或左键拖动平移。单击 Pad 查看编号。</p>
+     <p class="pad-inspect muted" id="padMapInfo">
+      点击 Pad 查看区域、版图和行列编号。
+     </p>
+     <details class="pad-table-details">
+      <summary>
+       查看全部 Pad 数据表
+      </summary>
+      <div id="padTable">
+      </div>
+     </details>
+    </article>
+   </section>
+   <div class="work-context" hidden="" id="workContext">
+    <div>
+     <span class="eyebrow">
+      当前样品
+     </span>
+     <strong id="workSampleName">
+     </strong>
+     <span class="muted" id="workSampleMeta">
+     </span>
+    </div>
+    <div class="step-progress" id="stepProgress">
+    </div>
+   </div>
+   <div class="step-notice" hidden="" id="stepNotice" role="status">
+   </div>
+   <section class="tab" id="samples">
+    <div class="page-heading">
+     <div>
+      <span class="eyebrow">
+       步骤 1
+      </span>
+      <h1>
+       建档与主图
+      </h1>
+      <p>
+       上传整片主图；已有 Pad 表或版图模板也可以从这里导入。
+      </p>
+     </div>
+    </div>
+    <div class="setup-grid">
+     <article>
+      <h2>
+       整片主图与补充图
+      </h2>
+      <input accept="image/png,image/jpeg" id="imageFile" type="file"/>
+      <button id="uploadImage">
+       上传到当前样品
+      </button>
+      <div class="upload-status" id="uploadStatus" role="status" aria-live="polite" hidden>
+       <progress id="uploadProgress" max="100" value="0"></progress>
+       <span id="uploadMessage"></span>
+      </div>
+      <select id="imageSelect">
+      </select>
+      <button id="setPrimary">
+       设为整片主图
+      </button>
+      <p class="muted" id="imageRole">
+      </p>
+      <p class="muted">
+       ZHENGPIAN.jpg 自动作为主图；其他图供局部核对。整片图在完整缩略图上框选范围，放大图用于查看细节。
+      </p>
+      <div class="setup-image-preview" id="setupImagePreview">
+      </div>
+     </article>
+     <article>
+      <h2>
+       导入 Pad
+      </h2>
+      <p>
+       CSV/XLSX 字段见 README。导入按 Pad ID 严格校验；不会覆盖已有 Pad。
+      </p>
+      <input accept=".csv,.xlsx,.xlsm" id="padFile" type="file"/>
+      <button id="importPads">
+       导入
+      </button>
+      <p>
+       <a download="" href="/templates/pads.csv">
+        模板见项目 templates/pads.csv
+       </a>
+      </p>
+     </article>
+     <article>
+      <h2>
+       版图模板
+      </h2>
+      <label>
+       模板名
+       <input id="templateName" placeholder="同版图可跨样品复用"/>
+      </label>
+      <button id="saveTemplate">
+       保存当前版图
+      </button>
+      <select aria-label="选择版图模板" id="templateSelect">
+      </select>
+      <div class="template-actions">
+       <button id="applyTemplate">
+        应用到当前样品
+       </button>
+       <button class="danger" disabled="" id="deleteTemplate" type="button">
+        删除选中模板
+       </button>
+      </div>
+     </article>
+    </div>
+    <article class="secondary-panel">
+     <h2>
+      样品层级：区域 → 重复版图 → Pad 行列
+     </h2>
+     <div id="sampleStructure">
+     </div>
+    </article>
+   </section>
+   <section class="tab" id="om">
+    <div class="page-heading">
+     <div>
+      <span class="eyebrow">
+       步骤 2
+      </span>
+      <h1>
+       区域识别
+      </h1>
+      <p>
+       在完整主图上逐个画框，每个框代表一个区域；识别进度与区域状态显示在右侧。
+      </p>
+     </div>
+    </div>
+    <div class="workspace">
+     <article class="workspace-canvas">
+      <div class="canvas-heading">
+       <h2>
+        整片图与区域框
+       </h2>
+       <div class="detect-main-actions">
+        <span class="muted">
+         拖动画框后自动保存
+        </span>
+        <button id="detect">
+         识别全部区域
+        </button>
+       </div>
+      </div>
+      <div class="rotation-toolbar">
+       <button id="rotateLeft" type="button" class="minor">左转 90°</button>
+       <label>旋转角度（顺时针为正）
+        <input id="rotationAngle" type="range" min="-180" max="180" step="0.1" value="0"/>
+       </label>
+       <input id="rotationDegrees" type="number" min="-180" max="180" step="0.1" value="0" aria-label="旋转角度，单位度"/>
+       <span>°</span>
+       <button id="rotateRight" type="button" class="minor">右转 90°</button>
+       <button id="applyRotation" type="button" disabled>应用为新主图</button>
+       <button id="cancelRotation" type="button" class="minor" disabled>取消预览</button>
+      </div>
+      <p id="rotationStatus" class="muted" role="status">先调整角度预览；应用后再画区域框。原图会保留在图片列表中。</p>
+      <div aria-live="polite" class="detect-progress" hidden="" id="detectProgress" role="status">
+       <span aria-hidden="true" class="spinner">
+       </span>
+       <span>
+        识别中，请稍候…
+       </span>
+       <progress aria-label="候选识别中">
+       </progress>
+      </div>
+      <div class="overview-stage" id="overviewStage">
+      </div>
+      <p id="roiSizeHint" class="muted" role="status">点击“添加区域框”，再在整图上按住鼠标拖动；画框时显示宽高和坐标。</p>
+     </article>
+     <aside class="workspace-side">
+      <article>
+       <h2>
+        添加区域
+       </h2>
+       <label>
+        新区域 ID
+        <input id="newRegionId" placeholder="例如 R1" value="R1"/>
+       </label>
+       <button id="selectRoi">
+        添加区域框（画完自动保存）
+       </button>
+       <div class="region-box-list" id="regionBoxList">
+       </div>
+      </article>
+      <article>
+       <h2>
+        候选识别
+       </h2>
+       <label>
+        对比度极性
+        <select id="polarity">
+         <option value="light">
+          亮色 Pad
+         </option>
+         <option value="dark">
+          暗色 Pad
+         </option>
+        </select>
+       </label>
+       <label>
+        最小候选直径 px
+        <input id="minCandidate" min="1" type="number" value="8"/>
+       </label>
+       <label>
+        最大候选直径 px
+        <input id="maxCandidate" min="2" type="number" value="80"/>
+       </label>
+       <label class="checkbox-row">
+        <input id="showReviewCandidates" type="checkbox"/>
+        无规则版图时显示原始待复核点（橙色）
+       </label>
+       <p class="muted">
+        请检查紫色和灰色格点，必要时删点或补点；像素尺寸不能直接当 µm。
+       </p>
+      </article>
+     </aside>
+    </div>
+   </section>
+   <section class="tab" id="review">
+    <div class="page-heading">
+     <div>
+      <span class="eyebrow">
+       步骤 3
+      </span>
+      <h1>
+       核对与保存
+      </h1>
+      <p>
+       逐区域检查格点，修正后批量保存 Pad，再明确标记核对完成。
+      </p>
+     </div>
+    </div>
+    <div class="workspace">
+     <article class="workspace-canvas">
+      <div class="canvas-heading">
+       <h2>
+        放大核对
+       </h2>
+       <small class="muted" id="viewingRegion">
+       </small>
+      </div>
+      <label>
+       缩放
+       <input id="imageZoom" max="16" min="0.1" step="0.01" type="range" value="1"/>
+      </label>
+      <div class="image-edit-toolbar">
+       <button id="clickAddCandidateHere" type="button">
+        点图补点
+       </button>
+       <button class="minor" disabled="" id="removeCandidateHere" type="button">
+        删除选中点
+       </button>
+       <label class="checkbox-row">
+        <input checked="" id="showOmCandidates" type="checkbox"/>
+        显示候选点
+       </label>
+       <label class="checkbox-row">
+        <input id="showOmOutlines" type="checkbox"/>
+        显示尺寸轮廓
+       </label>
+       <label class="checkbox-row">
+        <input id="showSavedPads" type="checkbox"/>
+        显示已保存 Pad
+       </label>
+       <span class="muted">
+        滚轮以指针为中心缩放，按住滚轮拖动平移；左键点击候选点或在补点模式下点击遗漏 Pad 的中心。
+       </span>
+      </div>
+      <div class="candidate-legend" aria-label="候选点颜色说明">
+       <span><i class="observed"></i>图像检测</span>
+       <span><i class="inferred"></i>图像补漏</span>
+       <span><i class="needs-review"></i>待复核</span>
+       <span><i class="layout-only"></i>仅布局推断</span>
+       <span><i class="manual"></i>人工补点</span>
+       <span><i class="selected"></i>当前选中</span>
+      </div>
+      <div class="image-stage" id="imageStage">
+      </div>
+      <p aria-live="polite" id="detectNote">
+      </p>
+     </article>
+     <aside class="workspace-side">
+      <article>
+       <h2>
+        区域核对状态
+       </h2>
+       <div id="reviewRegionList">
+       </div>
+      </article>
+      <article>
+       <h2>
+        批量保存 Pad
+       </h2>
+       <p class="muted">
+        识别并完成修正后，程序从主图标尺自动换算 µm/像素；核对读数后可直接批量保存。规则格点自动生成行列编号，人工补点自动编号。
+       </p>
+       <label>
+        版图类型 ID
+        <input id="omLayoutType" placeholder="默认 L1；同一区域统一使用" value="L1"/>
+       </label>
+       <label>
+        主图标尺 µm/像素
+        <input id="umPerPx" min="0" placeholder="自动读取主图标尺；可人工修正" step="any" type="number"/>
+       </label>
+       <p class="muted" id="scaleBarInfo">
+        选择整片主图后自动读取图中标尺。
+       </p>
+       <div class="scale-draw-controls">
+        <label>
+         标尺实际长度（µm）
+         <input id="scaleLengthUm" min="0" placeholder="例如 2000" step="any" type="number"/>
+        </label>
+        <button class="minor" id="drawScaleLine" type="button">在主图上拉线标定</button>
+       </div>
+       <p class="muted">自动读数不准时，填写标尺实际长度，点按钮后在放大图上从标尺一端拖到另一端；可用滚轮放大、按住中键移动。</p>
+       <button id="saveAllCandidates" type="button">
+        保存全部已核对候选为 Pad
+       </button>
+       <p class="muted" id="batchSaveNote">
+        尚未批量保存。
+       </p>
+       <button class="minor" disabled="" id="removeCandidate" type="button">
+        删除选中候选点
+       </button>
+       <p class="muted" id="candidateInfo">
+        尚未选中候选
+       </p>
+       <details>
+        <summary>
+         单点编号与特殊形状（高级）
+        </summary>
+        <label>
+         区域 ID
+         <input id="omRegion" value="R1"/>
+        </label>
+        <label>
+         重复版图 ID
+         <input id="omUnit" value="U1"/>
+        </label>
+        <div class="grid-pair">
+         <label>
+          版图所在行
+          <input id="omUnitRow" min="1" step="1" type="number"/>
+         </label>
+         <label>
+          版图所在列
+          <input id="omUnitCol" min="1" step="1" type="number"/>
+         </label>
+        </div>
+        <label>
+         Pad 局部 ID
+         <input id="omLocal" placeholder="r03c05"/>
+        </label>
+        <div class="grid-pair">
+         <label>
+          Pad 行
+          <input id="omPadRow" min="1" step="1" type="number"/>
+         </label>
+         <label>
+          Pad 列
+          <input id="omPadCol" min="1" step="1" type="number"/>
+         </label>
+        </div>
+        <label>
+         形状
+         <select id="omShape">
+          <option value="circle">
+           圆形
+          </option>
+          <option value="square">
+           方形
+          </option>
+          <option value="other">
+           其他
+          </option>
+         </select>
+        </label>
+        <button id="confirmCandidate">
+         单点保存 Pad
+        </button>
+       </details>
+      </article>
+      <article>
+       <h2>
+        手动补充候选
+       </h2>
+       <p class="muted">
+        点击图片设置中心，再输入边框像素宽高。
+       </p>
+       <label>
+        中心 X px
+        <input id="manualX" step="any" type="number"/>
+       </label>
+       <label>
+        中心 Y px
+        <input id="manualY" step="any" type="number"/>
+       </label>
+       <label>
+        宽 px
+        <input id="manualWidth" step="any" type="number"/>
+       </label>
+       <label>
+        高 px
+        <input id="manualHeight" step="any" type="number"/>
+       </label>
+       <button id="manualCandidate">
+        按坐标补点并保存
+       </button>
+       <button id="clickAddCandidate" type="button">
+        点击放大图补点
+       </button>
+       <p class="muted">
+        点图补点时，宽高默认取该区域候选的中位数；可先填写上方宽高覆盖。
+       </p>
+      </article>
+      <article>
+       <h2>
+        人工修正记录
+       </h2>
+       <div class="region-box-list" id="candidateEditList">
+       </div>
+      </article>
+     </aside>
+    </div>
+    <details class="review-guide">
+     <summary>
+      保存与颜色说明
+     </summary>
+     <div class="save-guide">
+      <strong>
+       保存说明
+      </strong>
+      <p>
+       画完区域框会自动保存到当前样品，刷新后仍在。识别得到的候选刷新后需重新识别；手工删点、补点会保存，重新识别时继续生效。红色白边为图像检测到的规则格点，紫色为有图像信号的补漏格点，灰色为空间布局推断位置，蓝色为人工补点，黄黑圈为当前选中点。规则版图的原始橙色散点已从结果移除；紫色和灰色点仍须人工核验。选中错误候选可点“删除选中候选点”，也可在放大图直接点击遗漏 Pad 补点；下方的人工修正可撤销。核对完候选和自动标尺读数后，点击“保存全部已核对候选为 Pad”即可批量入库，不必逐点选择。系统保留识别置信来源；人工补点以 U-MANUAL/M编号保存，可在高级区域单点指定正式编号。已有 Pad 不会被自动覆盖；删除候选点或区域框不会删除已保存的 Pad。
+      </p>
+     </div>
+    </details>
+   </section>
+   <section class="tab" id="sample">
+    <h1>
+     空间选点
+    </h1>
+    <div class="grid">
+     <article>
+      <label>
+       选点方式
+       <select id="samplingMode">
+        <option value="region">
+         按区域与重复版图
+        </option>
+        <option value="geometry">
+         按几何规格
+        </option>
+       </select>
+      </label>
+      <div hidden="" id="geometryFilter">
+       <label>
+        几何规格
+        <select id="groupSelect">
+        </select>
+       </label>
+       <div id="groupInfo">
+       </div>
+      </div>
+      <div class="sampling-regions-title">
+       选择区域
+      </div>
+      <div class="sampling-regions" id="samplingRegionChoices">
+      </div>
+      <input id="regions" type="hidden"/>
+      <label class="checkbox-row">
+       <input checked="" id="includeLayoutOnly" type="checkbox"/>
+       纳入灰色空心推断点（须先核实）
+      </label>
+      <p class="muted">
+       区域内优先选不同重复版图，再分散到不同位置；默认跳过已测和排除点；灰色空心推断点默认纳入，请逐点核验。
+      </p>
+      <label>
+       测点数量
+       <input id="sampleCount" min="1" type="number" value="9"/>
+      </label>
+      <label>
+       随机种子
+       <input id="seed" type="number" value="2026"/>
+      </label>
+      <button id="makePlan">
+       生成并保存清单
+      </button>
+      <button disabled="" id="savePlanEdits" type="button">
+       将图上选择另存为新方案
+      </button>
+      <p class="muted">
+       生成后点击图中的 Pad 可取消或加入；原方案保留，修改后的清单需另存。
+      </p>
+     </article>
+     <article>
+      <h2>
+       选点清单
+      </h2>
+      <div id="planResult">
+      </div>
+     </article>
+    </div>
+    <article>
+     <h2>
+      选点可视化
+     </h2>
+     <div class="plan-toolbar">
+      <label>
+       缩放
+       <input id="planZoom" max="8" min="1" step="0.01" type="range" value="1"/>
+      </label>
+      <button id="planReset" type="button">
+       重置视图
+      </button>
+      <label>
+       <input checked="" id="planShowTested" type="checkbox"/>
+       显示已测
+      </label>
+      <label>
+       <input checked="" id="planShowExcluded" type="checkbox"/>
+       显示排除
+      </label>
+     </div>
+     <div class="plan-legend" id="planLegend">
+     </div>
+     <div class="plan-image" id="planImage">
+     </div>
+     <p class="canvas-help muted">滚轮在指针处缩放；按住滚轮或左键拖动平移。单击 Pad 加入或取消清单。</p>
+     <div class="pad-inspect muted" id="padInspect">
+      点击图中的 Pad 可加入或取消当前清单。
+     </div>
+    </article>
+    <article>
+     <h2>
+      已保存方案
+     </h2>
+     <div id="planHistory">
+     </div>
+    </article>
+   </section>
+   <section class="tab" id="results">
+    <h1>
+     结果与分析
+    </h1>
+    <article>
+     <p>
+      按 pad_id 匹配，原始导入行会保存。status：valid / no_response / breakdown / leakage / test_error。Pr 单位 µC/cm²；Ec 单位 MV/cm。
+     </p>
+     <input accept=".csv,.xlsx,.xlsm" id="measureFile" type="file"/>
+     <button id="importMeasurements">
+      导入结果
+     </button>
+     <div id="measurementTable">
+     </div>
+    </article>
+    <section class="analysis-panel" id="analysis">
+     <h1>
+      统计分析
+     </h1>
+     <article>
+      <label>
+       几何组
+       <select id="analysisGroup">
+        <option value="">
+         全部规格（仅描述性）
+        </option>
+       </select>
+      </label>
+      <label>
+       评价区域（留空代表全部）
+       <input id="analysisRegions" placeholder="R1,R2"/>
+      </label>
+      <button id="refreshSummary">
+       计算
+      </button>
+      <div id="summary">
+      </div>
+     </article>
+    </section>
+   </section>
+  </main>
+  <div id="toast" role="status">
+  </div>
+  <script src="/app.js">
+  </script>
+  <script src="/state.js">
+  </script>
+  <script src="/om_helpers.js">
+  </script>
+  <script src="/sampling.js">
+  </script>
+  <script src="/pad_map.js">
+  </script>
+  <script src="/om_view.js">
+  </script>
+  <script src="/controller.js">
+  </script>
+  <script src="/workspace.js">
+  </script>
+  <script src="/om_actions.js">
+  </script>
+ </body>
+</html>

@@ -87,7 +87,12 @@ def complete_lattice(image: Image.Image, proposals, polarity="light"):
     if len(high) < 80:
         return result, {"applied": False, "inferred": 0, "blocks": 0}
     diameter = float(np.median([min(p["width_px"], p["height_px"]) for p in high]))
-    points = np.array([(p["x"], p["y"]) for p in high], dtype=float)
+    # Small half-pitch rows can bridge the whitespace between repeated units.
+    # Fit the unit boundaries from the main-pad population, then add small rows.
+    large_high = [p for p in high if min(p["width_px"], p["height_px"]) >= .7 * diameter]
+    if len(large_high) < 80:
+        return result, {"applied": False, "inferred": 0, "blocks": 0}
+    points = np.array([(p["x"], p["y"]) for p in large_high], dtype=float)
     pitch = _estimate_pitch(points, diameter)
     if not pitch:
         return result, {"applied": False, "inferred": 0, "blocks": 0}
@@ -148,7 +153,7 @@ def complete_lattice(image: Image.Image, proposals, polarity="light"):
             if len(reference) < 30:
                 continue
             threshold = max(4, float(np.quantile(reference, .1)) - 1)
-            block_high = [p for p in high if x_start-20 < p["x"] < x_start+block_width+20 and
+            block_high = [p for p in large_high if x_start-20 < p["x"] < x_start+block_width+20 and
                           y_start-20 < p["y"] < y_start+block_width+20]
             size = float(np.median([min(p["width_px"], p["height_px"]) for p in block_high]))
             shape = "circle" if sum(p["shape_guess"] == "circle" for p in block_high) > len(block_high) * .5 else "other"
@@ -271,23 +276,87 @@ def complete_lattice(image: Image.Image, proposals, polarity="light"):
                                     "pad_col": site_index % (count * 2) + 1,
                                     "signal_score": round(score, 2) if score is not None else None})
 
-    output = sorted(large_sites + small_sites, key=lambda p: (p["y"], p["x"]))
+    # Some repeated blocks have two narrow columns on the left. Their rows
+    # have half the pitch of the main 12x12 grid. Require raw candidates at
+    # the predicted sites in several blocks before completing this pattern.
+    side_sites = []
+    side_size = None
+    raw_side = [p for p in result if min(p["width_px"], p["height_px"]) < .7 * diameter]
+    if raw_side:
+        side_tree = cKDTree([(p["x"], p["y"]) for p in raw_side])
+        side_probes = []
+        for unit in units:
+            x0, y0 = unit["x_lines"][0], unit["y_lines"][0]
+            sites = np.array([(x0 - 1.1 * pitch + col * pitch / 2,
+                               y0 - pitch / 4 + row * pitch / 2)
+                              for row in range(2 * count) for col in range(2)])
+            distances, indices = side_tree.query(sites)
+            matched = distances < .18 * pitch
+            side_probes.append((unit, sites, matched, indices))
+        supported = [int(matched.sum()) for _, _, matched, _ in side_probes]
+        side_pattern = (sum(supported) >= 4 * count and
+                        sum(hits >= max(6, count // 2) for hits in supported) >= 3)
+        if side_pattern:
+            observed_sizes = [min(raw_side[int(index)]["width_px"], raw_side[int(index)]["height_px"])
+                              for _, _, matched, indices in side_probes
+                              for hit, index in zip(matched, indices) if hit]
+            side_size = float(np.median(observed_sizes))
+            side_radius, side_center, side_ring = masks(side_size)
+            for unit, sites, matched, indices in side_probes:
+                # Let visible tiny pads refine the phase of each block. Sparse
+                # blocks keep the phase inherited from their main array.
+                if matched.sum() >= 6:
+                    observed = np.array([(raw_side[int(index)]["x"], raw_side[int(index)]["y"])
+                                         for hit, index in zip(matched, indices) if hit])
+                    residual = np.median(observed - sites[matched], axis=0)
+                    sites += np.clip(residual, -.15 * pitch, .15 * pitch)
+                distances, indices = side_tree.query(sites)
+                matched = distances < .18 * pitch
+                scores = [_spot_score(gray, x, y, side_center, side_ring, side_radius, sign)
+                          for x, y in sites]
+                reference = [score for score, hit in zip(scores, matched) if hit and score is not None]
+                threshold = max(1.5, float(np.quantile(reference, .1)) - .5) if len(reference) >= 5 else 2.
+                for site_index, ((x, y), hit, index, score) in enumerate(zip(sites, matched, indices, scores)):
+                    if hit:
+                        confidence = "high"
+                        matched_cells += 1
+                    elif score is not None and score >= threshold:
+                        confidence = "grid_inferred"
+                        inferred_cells += 1
+                    else:
+                        confidence = "layout_only"
+                    side_sites.append({"x": round(float(x), 1), "y": round(float(y), 1),
+                                       "width_px": round(side_size, 1), "height_px": round(side_size, 1),
+                                       "shape_guess": "square", "fill": None, "grid_support": None,
+                                       "confidence": confidence, "pad_class": "tiny",
+                                       "layout_unit_id": unit["layout_unit_id"],
+                                       "unit_row": unit["unit_row"], "unit_col": unit["unit_col"],
+                                       "pad_row": site_index // 2 + 1, "pad_col": site_index % 2 + 1,
+                                       "signal_score": round(score, 2) if score is not None else None})
+            for site in large_sites + small_sites:
+                site["pad_col"] += 2
+
+    output = sorted(large_sites + small_sites + side_sites, key=lambda p: (p["y"], p["x"]))
     big_size = round(float(np.median([unit["large_size"] for unit in units])), 1)
-    small_size = round(float(np.median([p["width_px"] for p in small_sites])), 1) if small_sites else None
+    small_size = round(float(np.median([p["width_px"] for p in small_sites + side_sites])), 1) if small_sites or side_sites else None
     total = len(output)
     return output, {"applied": True, "inferred": inferred_cells, "blocks": len(units),
                     "unit_rows": len(y_segments), "unit_cols": len(x_segments),
                     "pitch_px": pitch, "large_rows": count, "large_cols": count,
-                    "small_rows": 2 * sum(patterns.values()),
-                    "small_cols": count * 2 if any(patterns.values()) else 0,
-                    "small_position": ("both" if all(patterns.values()) else
+                    "small_rows": 2 * count if side_sites else 2 * sum(patterns.values()),
+                    "small_cols": 2 if side_sites else count * 2 if any(patterns.values()) else 0,
+                    "small_position": ("left" if side_sites else
+                                       "both" if all(patterns.values()) else
                                        "top" if patterns["top"] else
                                        "bottom" if patterns["bottom"] else None),
                     "top_small_rows": 2 if patterns["top"] else 0,
                     "bottom_small_rows": 2 if patterns["bottom"] else 0,
+                    "left_small_rows": 2 * count if side_sites else 0,
+                    "left_small_cols": 2 if side_sites else 0,
                     "shape_guess": "circle" if sum(u["shape"] == "circle" for u in units) > len(units)/2 else "other",
                     "large_size_px": big_size, "small_size_px": small_size,
-                    "cells_per_block": count * count + 2 * count * 2 * sum(patterns.values()),
+                    "cells_per_block": count * count + 2 * count * 2 * sum(patterns.values()) +
+                                       (4 * count if side_sites else 0),
                     "matched_cells": matched_cells, "candidate_cells": total,
                     "layout_only": sum(p["confidence"] == "layout_only" for p in output)}
 
@@ -315,25 +384,33 @@ def complete_graded_rows(image: Image.Image, proposals, polarity="light"):
             np.std(band_steps) < .08*np.mean(band_steps)):
         return original, {"applied": False, "inferred": 0, "blocks": 0}
 
-    # Find the six smaller rows preceding the first large pair. Their offsets
-    # are shared by all four bands, including rows with few visible proposals.
+    # The largest pair can be at either end of each repeated band. Derive the
+    # remaining six rows from the first band, then share their offsets.
     all_hist = np.bincount(np.rint([p["y"] for p in original]).astype(int), minlength=image.height).astype(float)
     all_smooth = ndimage.gaussian_filter1d(all_hist, 7)
     all_peaks, _ = signal.find_peaks(all_smooth, distance=27, prominence=max(.07, .13*all_smooth.max()))
     first_large = int(pairs[0, 0])
     before = [int(y) for y in all_peaks if first_large-410 < y < first_large-30]
-    if len(before) < 6:
+    next_band = int(pairs[1, 0])
+    after = [int(y) for y in all_peaks if pairs[0, 1]+30 < y < next_band-30]
+    if len(before) >= 6:
+        row_centers = before[-6:] + [first_large, int(pairs[0, 1])]
+        classes = ("tiny", "small", "medium", "large")
+        nominal = (12, 23, 34, 58)
+    elif len(after) >= 6:
+        row_centers = [first_large, int(pairs[0, 1])] + after[:6]
+        classes = ("large", "medium", "small", "tiny")
+        nominal = (58, 34, 23, 12)
+    else:
         return original, {"applied": False, "inferred": 0, "blocks": 0}
-    offsets = np.array(before[-6:] + [first_large, int(pairs[0, 1])], dtype=float) - first_large
+    offsets = np.array(row_centers, dtype=float) - first_large
     if not (np.all(np.diff(offsets) > 25) and np.all(np.diff(offsets) < 115)):
         return original, {"applied": False, "inferred": 0, "blocks": 0}
 
     # This layout has four horizontal groups per band.  The gaps between
     # groups are real; treating all columns as one uniform grid shifts the
     # middle columns and can lose the last column at the right edge.
-    classes = ("tiny", "small", "medium", "large")
     columns_per_group = {"tiny": 24, "small": 12, "medium": 8, "large": 5}
-    nominal = (12, 23, 34, 58)
     large_rows = [
         sorted(p["x"] for p in large if abs(p["y"] - row_y) < 14)
         for row_y in peaks

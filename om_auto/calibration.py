@@ -38,7 +38,7 @@ def _digit_templates():
     return templates
 
 
-def _read_label(rgb, bar_box, bar_height):
+def _read_label(rgb, bar_box, bar_height, style="orange"):
     x1, y1, x2, y2 = bar_box
     height, width = rgb.shape[:2]
     left = max(0, x1 - 2 * (x2 - x1))
@@ -49,9 +49,29 @@ def _read_label(rgb, bar_box, bar_height):
         return None
     sub = rgb[top:bottom, left:right]
     red, green, blue = sub[:, :, 0], sub[:, :, 1], sub[:, :, 2]
-    orange = ((red > 130) & (green > 35) & (green < 190) &
-              (blue < 100) & (red > 1.5 * green))
-    labels, count = ndimage.label(orange)
+    if style == "dark_on_white":
+        white, _ = ndimage.label((red > 200) & (green > 200) & (blue > 200))
+        boxes = []
+        for index, slices in enumerate(ndimage.find_objects(white), 1):
+            if slices is None:
+                continue
+            ys, xs = slices
+            if (xs.stop - xs.start >= .8 * (x2 - x1) and
+                    ys.stop - ys.start >= .5 * bar_height and
+                    xs.start + left < x2 and xs.stop + left > x1):
+                boxes.append(((xs.stop - xs.start) * (ys.stop - ys.start), slices))
+        if not boxes:
+            return None
+        _, (ys, xs) = max(boxes)
+        inset = sub[ys, xs]
+        ink = np.max(inset, axis=2) < 130
+        labels, _ = ndimage.label(ink)
+        offset_x, offset_y = left + xs.start, top + ys.start
+    else:
+        ink = ((red > 130) & (green > 35) & (green < 190) &
+               (blue < 100) & (red > 1.5 * green))
+        labels, _ = ndimage.label(ink)
+        offset_x, offset_y = left, top
     components = []
     for index, slices in enumerate(ndimage.find_objects(labels), 1):
         if slices is None:
@@ -62,7 +82,7 @@ def _read_label(rgb, bar_box, bar_height):
             continue
         if ys.stop-ys.start < max(8, .5 * bar_height):
             continue
-        components.append((xs.start + left, ys.start + top, labels[slices] == index))
+        components.append((xs.start + offset_x, ys.start + offset_y, labels[slices] == index))
     if len(components) < 3:
         return None
     first_y = min(item[1] for item in components)
@@ -86,7 +106,7 @@ def _read_label(rgb, bar_box, bar_height):
         digits.append(best_digit)
     if digits[0] == "0":
         return None
-    # A second orange component to the right is expected for the µm suffix.
+    # A suffix component to the right is expected for the µm unit.
     if not any(x > digit_parts[-1][0] + digit_parts[-1][2].shape[1]
                for x, _, _ in components):
         return None
@@ -100,40 +120,42 @@ def read_scale_bar(image: Image.Image):
     region = (0, int(.7 * height), int(.35 * width), height)
     rgb = np.asarray(image.convert("RGB").crop(region))
     red, green, blue = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
-    bar_pixels = ((red > 180) & (green < 65) & (blue < 75) &
-                  (red > 2.3 * green))
-    labels, count = ndimage.label(bar_pixels)
+    red_bar = ((red > 180) & (green < 65) & (blue < 75) &
+               (red > 2.3 * green))
+    blue_bar = ((blue > 130) & (blue > 1.4 * red) &
+                (blue > 1.2 * green))
     bars = []
-    for index, slices in enumerate(ndimage.find_objects(labels), 1):
-        if slices is None:
-            continue
-        ys, xs = slices
-        bar_width, bar_height = xs.stop-xs.start, ys.stop-ys.start
-        pixels = int(np.count_nonzero(labels[slices] == index))
-        if bar_width >= 30 and bar_height >= 5 and pixels >= 100:
-            bars.append((pixels, index, slices))
+    for style, mask in (("orange", red_bar), ("dark_on_white", blue_bar)):
+        labels, _ = ndimage.label(mask)
+        for index, slices in enumerate(ndimage.find_objects(labels), 1):
+            if slices is None:
+                continue
+            ys, xs = slices
+            bar_width, bar_height = xs.stop-xs.start, ys.stop-ys.start
+            pixels = int(np.count_nonzero(labels[slices] == index))
+            if bar_width >= 30 and bar_height >= 5 and pixels >= 100:
+                bars.append((pixels, style, labels[slices] == index, slices))
     if not bars:
         return None
-    _, index, slices = max(bars)
-    ys, xs = slices
-    bar_mask = labels[slices] == index
-    bar_height = ys.stop-ys.start
-    bar_width = xs.stop-xs.start
-    if bar_height > .3 * bar_width:
-        projection = bar_mask.sum(axis=0)
-        stripes = _groups(np.where(projection > .45 * projection.max())[0])
-        if len(stripes) not in (2, 4):
-            return None
-        centers = [float(np.mean(stripe)) for stripe in stripes]
-        length_px = (centers[2] + centers[3] - centers[0] - centers[1]) / 2 if len(stripes) == 4 else centers[1] - centers[0]
-    else:
-        length_px = float(bar_width-1)
-    if length_px < 15:
-        return None
-    label_um = _read_label(rgb, (xs.start, ys.start, xs.stop, ys.stop), bar_height)
-    if label_um is None:
-        return None
-    box = (xs.start, ys.start+region[1], xs.stop, ys.stop+region[1])
-    return {"label_um": label_um, "bar_length_px": round(length_px, 1),
-            "um_per_px": round(label_um / length_px, 6),
-            "bar_box": list(box), "source": "image_scale_bar"}
+    for _, style, bar_mask, slices in sorted(bars, key=lambda bar: bar[0], reverse=True):
+        ys, xs = slices
+        bar_height, bar_width = ys.stop-ys.start, xs.stop-xs.start
+        if bar_height > .15 * bar_width:
+            projection = bar_mask.sum(axis=0)
+            stripes = _groups(np.where(projection > .45 * projection.max())[0])
+            if len(stripes) not in (2, 4):
+                continue
+            centers = [float(np.mean(stripe)) for stripe in stripes]
+            length_px = (centers[2] + centers[3] - centers[0] - centers[1]) / 2 if len(stripes) == 4 else centers[1] - centers[0]
+        else:
+            length_px = float(bar_width-1)
+        if length_px < 15:
+            continue
+        label_um = _read_label(rgb, (xs.start, ys.start, xs.stop, ys.stop), bar_height, style)
+        if label_um is None:
+            continue
+        box = (xs.start, ys.start+region[1], xs.stop, ys.stop+region[1])
+        return {"label_um": label_um, "bar_length_px": round(length_px, 1),
+                "um_per_px": round(label_um / length_px, 6),
+                "bar_box": list(box), "source": "image_scale_bar"}
+    return None

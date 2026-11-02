@@ -1,7 +1,8 @@
 """Create a 3-region, 9-unit-per-region reproducible demonstration dataset."""
 import argparse
 import random
-from om_auto.server import DB_PATH, import_measurements, import_pads
+from om_auto.server import DB_PATH
+from om_auto.ingest import import_measurements, import_pads
 from om_auto.store import connect
 
 parser=argparse.ArgumentParser()

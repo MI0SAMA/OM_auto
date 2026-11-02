@@ -1,14 +1,19 @@
+import json
 import math
+import sqlite3
 from io import BytesIO
 import pytest
 from PIL import Image, ImageDraw
 from om_auto.core import geometry_groups, pad_area, stratified_sample, summarize, wilson
-from om_auto.server import import_pads, import_measurements
+from om_auto.ingest import import_pads, import_measurements
 from om_auto.store import (archive_sample, candidate_edits, connect, delete_candidate_edit,
                            delete_region_box, measurements, pads, region_boxes, restore_sample,
                            sample_counts, save_candidate_edit, save_region_box, structure)
 from om_auto.vision import apply_candidate_edits, candidates
-from om_auto.lattice import complete_lattice
+from om_auto.lattice import complete_lattice, complete_graded_rows
+from om_auto.planning import create_plan, delete_plan
+from om_auto.detection import detect_candidates
+from om_auto.store import sample_overview, set_region_review
 
 
 def make_db(tmp_path):
@@ -53,6 +58,105 @@ def test_sampling_reproducible_no_tested_and_scope(tmp_path):
     assert all(p['region_id']=='R1' for p in one_region)
     summary=summarize(pp,measurements(db,'S'),['R1'])
     assert '不代表整片样品' in summary['note']
+
+
+def test_plan_creation_and_manual_adjustment(tmp_path):
+    db = make_db(tmp_path)
+    import_pads(db, 'S', fixture_pads())
+    automatic = create_plan(db, {'sample_id': 'S', 'mode': 'region',
+                                 'regions': ['R1', 'R2'], 'count': 4, 'seed': 7})
+    assert len(automatic['pads']) == 4
+    assert automatic['allocation'] == {'R1': 2, 'R2': 2}
+    selected_ids = [pad['pad_id'] for pad in automatic['pads'][:2]]
+    manual = create_plan(db, {'sample_id': 'S', 'mode': 'region',
+                              'regions': ['R1', 'R2'], 'pad_ids': selected_ids,
+                              'seed': 7})
+    assert [pad['pad_id'] for pad in manual['pads']] == selected_ids
+    saved = db.execute('SELECT purpose, pad_ids_json FROM plans WHERE plan_id=?',
+                       (manual['plan_id'],)).fetchone()
+    assert saved['purpose'] == 'manual_adjusted'
+    assert json.loads(saved['pad_ids_json']) == selected_ids
+
+
+def test_delete_plan_is_scoped_and_keeps_pad_data(tmp_path):
+    db = make_db(tmp_path)
+    import_pads(db, 'S', fixture_pads())
+    result = create_plan(db, {'sample_id': 'S', 'mode': 'region',
+                              'regions': ['R1'], 'count': 2, 'seed': 7})
+    plan_id = result['plan_id']
+    with pytest.raises(ValueError, match='不属于当前样品'):
+        delete_plan(db, 'another-sample', plan_id)
+    assert sample_counts(db, 'S')['plans'] == 1
+    assert delete_plan(db, 'S', plan_id) == {'deleted': plan_id}
+    assert sample_counts(db, 'S')['plans'] == 0
+    assert len(pads(db, 'S')) == len(fixture_pads())
+    with pytest.raises(ValueError, match='不存在'):
+        delete_plan(db, 'S', plan_id)
+    with pytest.raises(ValueError, match='整数'):
+        delete_plan(db, 'S', 1.5)
+
+
+def test_region_review_is_explicit_and_invalidated_by_region_changes(tmp_path):
+    db = make_db(tmp_path)
+    with pytest.raises(ValueError, match='先保存'):
+        db.execute("INSERT INTO regions(sample_id,region_id) VALUES('S','R1')")
+        db.commit()
+        set_region_review(db, 'S', 'R1', True)
+    import_pads(db, 'S', [fixture_pads()[0]])
+    set_region_review(db, 'S', 'R1', True)
+    assert structure(db, 'S')[0]['reviewed_at']
+    extra = dict(fixture_pads()[0], pad_id='S:R1:U2:Q', layout_unit_id='U2', pad_local_id='Q')
+    import_pads(db, 'S', [extra])
+    assert structure(db, 'S')[0]['reviewed_at'] is None
+    image_path = tmp_path / 'image.png'
+    Image.new('RGB', (150, 150), (100, 100, 100)).save(image_path)
+    db.execute("""INSERT INTO images(image_id,sample_id,file_path,width_px,height_px,role)
+                  VALUES('main','S',?,150,150,'primary')""", (str(image_path),))
+    db.commit()
+    set_region_review(db, 'S', 'R1', True)
+    save_region_box(db, 'S', 'main', 'R1', [10, 10, 130, 130])
+    assert structure(db, 'S')[0]['reviewed_at'] is None
+    set_region_review(db, 'S', 'R1', True)
+    detect_candidates(db, {'image_id': 'main', 'region_id': 'R1',
+                           'bbox': [10, 10, 130, 130], 'min_size': 5, 'max_size': 20})
+    assert structure(db, 'S')[0]['reviewed_at'] is None
+    set_region_review(db, 'S', 'R1', True)
+    save_candidate_edit(db, 'S', 'main', 'R1', 'add', 25, 25, 8, 8)
+    assert structure(db, 'S')[0]['reviewed_at'] is None
+
+
+def test_sample_overview_search_paging_and_deleted(tmp_path):
+    db = make_db(tmp_path)
+    db.execute("INSERT INTO samples(sample_id,recipe_id,updated_at) VALUES('S2','recipe-42',CURRENT_TIMESTAMP)")
+    db.commit()
+    import_pads(db, 'S', [fixture_pads()[0]])
+    set_region_review(db, 'S', 'R1', True)
+    page = sample_overview(db, page_size=1)
+    assert page['total'] == 2 and len(page['items']) == 1
+    assert sample_overview(db, query='recipe-42')['items'][0]['sample_id'] == 'S2'
+    result = sample_overview(db, query='S')
+    assert len(result['items']) == 2
+    assert next(item for item in result['items'] if item['sample_id'] == 'S')['confirmed_region_count'] == 1
+    archive_sample(db, 'S2')
+    assert sample_overview(db, scope='active')['total'] == 1
+    assert sample_overview(db, scope='deleted')['items'][0]['sample_id'] == 'S2'
+    with pytest.raises(ValueError, match='分页'):
+        sample_overview(db, page=0)
+
+
+def test_review_migration_keeps_legacy_region_unconfirmed(tmp_path):
+    path = tmp_path / 'legacy.sqlite3'
+    old = sqlite3.connect(path)
+    old.execute('CREATE TABLE samples(sample_id TEXT PRIMARY KEY, recipe_id TEXT, notes TEXT, image_path TEXT, deleted_at TEXT)')
+    old.execute('CREATE TABLE regions(sample_id TEXT, region_id TEXT, layout_type_id TEXT, PRIMARY KEY(sample_id,region_id))')
+    old.execute("INSERT INTO samples(sample_id) VALUES('old')")
+    old.execute("INSERT INTO regions(sample_id,region_id,layout_type_id) VALUES('old','R1','L1')")
+    old.commit(); old.close()
+    db = connect(path)
+    assert structure(db, 'old')[0]['reviewed_at'] is None
+    item = sample_overview(db, query='old')['items'][0]
+    assert item['region_count'] == 1 and item['confirmed_region_count'] == 0
+    assert item['last_activity_at'] is None
 
 
 def test_region_sampling_mixes_shapes_and_skips_layout_only(tmp_path):
@@ -273,6 +377,67 @@ def test_lattice_finds_faint_small_rows_above_main_grid():
                for p in result)
     assert any(p['layout_unit_id'] == 'U4' and p['pad_class'] == 'large' and
                p['pad_row'] == 10 and p['pad_col'] == 8 for p in result)
+
+
+def test_lattice_keeps_units_separate_when_small_rows_bridge_the_gaps():
+    image = Image.new('L', (2080, 2080), 100)
+    draw = ImageDraw.Draw(image)
+    proposals = []
+    for block_row in range(3):
+        for block_col in range(3):
+            x0, y0 = 120 + block_col * 663, 120 + block_row * 663
+            for row in range(12):
+                for col in range(12):
+                    x, y = x0 + col * 48, y0 + row * 48
+                    draw.ellipse((x-12, y-12, x+12, y+12), fill=130)
+                    proposals.append({'x': x, 'y': y, 'width_px': 25,
+                                      'height_px': 25, 'shape_guess': 'circle',
+                                      'confidence': 'high'})
+            for row in range(2):
+                for col in range(24):
+                    x, y = x0 - 12 + col * 24, y0 - 56 + row * 24
+                    draw.rectangle((x-5, y-5, x+5, y+5), fill=113)
+                    if block_row == block_col == row == 0 and 3 <= col <= 6:
+                        continue
+                    proposals.append({'x': x, 'y': y, 'width_px': 11,
+                                      'height_px': 11, 'shape_guess': 'square',
+                                      'confidence': 'high'})
+    result, grid = complete_lattice(image, proposals)
+    assert grid['applied'] and grid['blocks'] == 9
+    assert grid['unit_rows'] == grid['unit_cols'] == 3
+    assert grid['top_small_rows'] == 2 and grid['candidate_cells'] == 1728
+    row = [p for p in result if p['layout_unit_id'] == 'U1' and p['pad_row'] == 1]
+    assert [p['pad_col'] for p in row] == list(range(1, 25))
+    assert {p['pad_col'] for p in row if p['confidence'] == 'grid_inferred'} == {4, 5, 6, 7}
+
+
+def test_graded_rows_accept_largest_pads_at_top():
+    image = Image.new('L', (2100, 2532), 100)
+    draw = ImageDraw.Draw(image)
+    proposals = []
+    classes = [('large', 58, 5, 96, (0, 96)),
+               ('medium', 34, 8, 60, (181, 254)),
+               ('small', 23, 12, 40, (320, 368)),
+               ('tiny', 12, 24, 20, (422, 470))]
+    for band in range(4):
+        for kind, size, cols, pitch, offsets in classes:
+            for row, offset in enumerate(offsets):
+                y = 133 + band * 603 + offset
+                for group in range(4):
+                    for col in range(cols):
+                        x = 120 + group * 480 - (58 - size) / 2 + col * pitch
+                        draw.ellipse((x-size/3, y-size/3, x+size/3, y+size/3), fill=132)
+                        if kind == 'tiny' and band == row == 0 and group == 1 and col in (4, 5, 6):
+                            continue
+                        proposals.append({'x': x, 'y': y, 'width_px': size,
+                                          'height_px': size, 'shape_guess': 'circle',
+                                          'confidence': 'high'})
+    result, grid = complete_graded_rows(image, proposals)
+    assert grid['applied'] and grid['candidate_cells'] == 1568
+    assert [group['pad_class'] for group in grid['row_groups']] == ['large', 'medium', 'small', 'tiny']
+    inferred = [p for p in result if p['layout_unit_id'] == 'U1' and
+                p['pad_row'] == 7 and p['confidence'] == 'grid_inferred']
+    assert {p['pad_col'] for p in inferred} == {29, 30, 31}
 
 
 def test_delete_and_restore_sample_preserves_results(tmp_path):

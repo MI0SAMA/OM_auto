@@ -6,7 +6,7 @@ import shutil
 import uuid
 
 from om_auto.server import DATA, DB_PATH
-from om_auto.store import connect, rows
+from om_auto.store import connect, rows, touch_sample
 from om_auto.vision import inspect_image
 
 parser = argparse.ArgumentParser()
@@ -22,7 +22,8 @@ files = sorted(p for p in source.glob(args.pattern) if p.is_file() and p.suffix.
 if not files:
     parser.error('No matching JPEG/PNG images')
 db = connect(DB_PATH)
-db.execute('INSERT OR IGNORE INTO samples(sample_id,notes) VALUES(?,?)',
+db.execute('''INSERT OR IGNORE INTO samples(sample_id,notes,created_at,updated_at)
+              VALUES(?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)''',
            (args.sample,'OM image import; Pad IDs and calibration pending'))
 db.commit()
 if db.execute('SELECT deleted_at FROM samples WHERE sample_id=?', (args.sample,)).fetchone()[0]:
@@ -47,8 +48,10 @@ for file in files:
     role='primary' if file.stem.upper()=='ZHENGPIAN' else 'supplement'
     if role=='primary':
         db.execute("UPDATE images SET role='supplement' WHERE sample_id=?",(args.sample,))
+        db.execute("UPDATE regions SET reviewed_at=NULL WHERE sample_id=?",(args.sample,))
     db.execute('INSERT INTO images(image_id,sample_id,file_path,width_px,height_px,role,original_name) VALUES(?,?,?,?,?,?,?)',
                (image_id,args.sample,str(dest),width,height,role,file.name))
+    touch_sample(db,args.sample)
     print(args.sample,file.name,role,image_id,width,height)
     known.add(digest)
 db.commit()
