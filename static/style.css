@@ -891,7 +891,9 @@ button:disabled {
 .candidate-legend i.needs-review { background:#d58228; }
 .candidate-legend i.layout-only { background:white; border-color:#4b5663; }
 .candidate-legend i.manual { background:#267eaa; }
+.candidate-legend i.saved { background:white; border-color:#286fbd; }
 .candidate-legend i.selected { background:#d91f32; border:2px solid #ffdb4d; box-shadow:0 0 0 1px #182e3e; }
+#overlayStatus { margin:2px 0 9px; font-size:12px; }
 
 .template-actions {
   display:flex;

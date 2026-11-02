@@ -134,7 +134,7 @@ function renderOverview(item) {
 function renderImage(options = {}) {
   const item = selectedImage();
   const stage = $('imageStage');
-  if (!item) { stage.innerHTML = ''; renderOverview(null); return; }
+  if (!item) { stage.innerHTML = ''; $('overlayStatus').textContent = ''; renderOverview(null); return; }
   state.image = item.image_id;
   stage.classList.toggle('adding-point', state.addPointMode);
   stage.classList.toggle('drawing-scale', state.scaleDrawMode);
@@ -142,8 +142,12 @@ function renderImage(options = {}) {
   const left = stage.scrollLeft, top = stage.scrollTop;
   const zoom = Number($('imageZoom').value) || 1;
   const sourcePerScreen = item.width_px / (Math.max(stage.clientWidth, 1000) * zoom);
-  const confirmed = $('showSavedPads').checked ? state.pads.filter(p => p.image_id === item.image_id &&
-    p.x !== null && p.y !== null).map(p =>
+  const savedPads = state.pads.filter(p => p.image_id === item.image_id &&
+    p.x !== null && p.y !== null);
+  $('overlayStatus').textContent = savedPads.length
+    ? `当前图片有 ${savedPads.length} 个已保存 Pad（蓝色空心圈${$('showSavedPads').checked ? '，正在显示' : '，当前隐藏'}）。${state.detected.length ? `本次识别候选 ${state.detected.length} 个。` : '识别候选不会在刷新后保留；需要复核时可在右侧点击“重新识别”。'}`
+    : `当前图片没有已保存的定位 Pad。${state.detected.length ? `本次识别候选 ${state.detected.length} 个。` : '可先识别区域，或切换到有 Pad 的主图。'}`;
+  const confirmed = $('showSavedPads').checked ? savedPads.map(p =>
       `<circle cx="${p.x}" cy="${p.y}" r="${3 * sourcePerScreen}" fill="none" stroke="#286fbd" stroke-width="${1.3 * sourcePerScreen}" pointer-events="none"><title>${esc(p.pad_id)}</title></circle>`).join('') : '';
   const canRemove = state.candidate !== null && !!state.detected[state.candidate]?.region_id;
   $('removeCandidate').disabled = !canRemove;

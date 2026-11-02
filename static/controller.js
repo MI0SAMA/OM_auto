@@ -17,6 +17,7 @@ async function refresh() {
     $('planImage').innerHTML = '<p class="muted" style="padding:20px">请先创建或选择样品。</p>';
     $('planLegend').innerHTML = ''; $('planHistory').innerHTML = '';
     $('imageStage').innerHTML = ''; $('summary').innerHTML = '';
+    $('overlayStatus').textContent = '';
     $('overviewStage').innerHTML = ''; $('regionBoxList').innerHTML = '';
     state.regionBoxes = []; state.detected = []; state.latticeStats = {};
     state.primaryRegionBoxes = []; state.padMapRegion = '';
@@ -51,6 +52,7 @@ async function refresh() {
   } else {
     state.image = null;
     $('imageStage').innerHTML = '';
+    $('overlayStatus').textContent = '';
     renderOverview(null);
     await loadScaleBar(null);
   }
@@ -238,6 +240,7 @@ async function selectSample(sampleId, warn = true) {
   }
   state.sample = sampleId;
   $('sampleSelect').value = sampleId;
+  $('showSavedPads').checked = true;
   state.candidatesDirty = false;
   state.primaryRegionBoxes = []; state.padMapRegion = '';
   state.padMapActiveId = null;

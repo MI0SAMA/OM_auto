@@ -434,7 +434,7 @@
         显示尺寸轮廓
        </label>
        <label class="checkbox-row">
-        <input id="showSavedPads" type="checkbox"/>
+        <input checked="" id="showSavedPads" type="checkbox"/>
         显示已保存 Pad
        </label>
        <span class="muted">
@@ -447,8 +447,10 @@
        <span><i class="needs-review"></i>待复核</span>
        <span><i class="layout-only"></i>仅布局推断</span>
        <span><i class="manual"></i>人工补点</span>
+       <span><i class="saved"></i>已保存 Pad</span>
        <span><i class="selected"></i>当前选中</span>
       </div>
+      <p class="muted" id="overlayStatus" aria-live="polite"></p>
       <div class="image-stage" id="imageStage">
       </div>
       <p aria-live="polite" id="detectNote">
