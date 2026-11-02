@@ -128,15 +128,21 @@ async function detectBoxes(boxes) {
   $('sampleSelect').disabled = true;
   $('imageSelect').disabled = true;
   $('selectRoi').disabled = true;
-  $('detectProgress').hidden = false;
-  const progress = $('detectProgress').querySelector('progress');
-  progress.max = targets.length; progress.value = 0;
+  renderReviewRegions();
+  const indicators = [$('detectProgress'), $('reviewDetectProgress')];
+  for (const indicator of indicators) {
+    indicator.hidden = false;
+    const progress = indicator.querySelector('progress');
+    progress.max = targets.length; progress.value = 0;
+  }
   const errors = [];
   let completed = 0;
   try {
     for (const box of targets) {
-      $('detectProgress').querySelector('span:nth-child(2)').textContent = `识别 ${box.region_id || '当前图片'}（${completed + 1}/${targets.length}）…`;
+      for (const indicator of indicators)
+        indicator.querySelector('span:nth-child(2)').textContent = `识别 ${box.region_id || '当前图片'}（${completed + 1}/${targets.length}）…`;
       $('detectNote').textContent = `正在识别 ${box.region_id || '当前图片'}（${completed + 1}/${targets.length}）…`;
+      $('reviewDetectNote').textContent = $('detectNote').textContent;
       await new Promise(requestAnimationFrame);
       try {
         const r = await api('/api/detect', {image_id: item.image_id,
@@ -151,7 +157,7 @@ async function detectBoxes(boxes) {
         errors.push(`${box.region_id || '当前图片'}：${error.message}`);
       }
       completed++;
-      progress.value = completed;
+      for (const indicator of indicators) indicator.querySelector('progress').value = completed;
     }
     state.candidate = null;
     const complete = targets.filter(box => state.latticeStats[box.region_id]?.applied);
@@ -161,6 +167,7 @@ async function detectBoxes(boxes) {
       ? `${complete.length}/${targets.length} 个区域完成规则格点；${layoutOnly} 个灰色位置仅由布局推断。${rawOnly.length ? `${rawOnly.map(box => box.region_id).join('、')} 未拟合规则格点，仅显示原始候选。` : ''}`
       : `找到 ${state.detected.length} 个原始候选；尚未拟合出可补齐的规则格点。`;
     $('detectNote').textContent = `${completed - errors.length}/${completed} 个区域识别完成；${summary}${errors.length ? '失败：' + errors.join('；') : '点击格点可查看版图、行列与大致尺寸。'}`;
+    $('reviewDetectNote').textContent = $('detectNote').textContent;
     focusRegionBox([targets[0].x1, targets[0].y1, targets[0].x2, targets[0].y2]);
     if (completed > errors.length) {
       state.candidatesDirty = true;
@@ -174,6 +181,8 @@ async function detectBoxes(boxes) {
     $('imageSelect').disabled = false;
     $('selectRoi').disabled = false;
     $('detectProgress').hidden = true;
+    $('reviewDetectProgress').hidden = true;
+    renderReviewRegions();
     updateRotationPreview(selectedImage(), $('overviewStage').querySelector('.overview-canvas img'));
   }
 }

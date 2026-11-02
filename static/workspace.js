@@ -105,12 +105,18 @@ function renderReviewRegions() {
   const target = $('reviewRegionList');
   if (!target) return;
   const regions = state.structure || [];
-  target.innerHTML = regions.length ? regions.map(region =>
-    `<div class="review-region"><div><strong>${esc(region.region_id)}</strong><span class="review-state ${region.reviewed_at ? 'confirmed' : ''}">${region.reviewed_at ? '已核对' : '待核对'}</span><small>${region.pad_count} 个已保存 Pad · ${region.unit_count} 个重复版图</small></div><div class="review-region-actions"><button type="button" class="minor" data-focus="${esc(region.region_id)}">定位</button><button type="button" data-review="${esc(region.region_id)}" data-confirm="${region.reviewed_at ? 'false' : 'true'}" ${region.pad_count ? '' : 'disabled'}>${region.reviewed_at ? '撤销确认' : '核对完成'}</button></div></div>`).join('') : '<p class="muted">暂无区域。请先在整片图上画框。</p>';
+  target.innerHTML = regions.length ? regions.map(region => {
+    const hasBox = state.regionBoxes.some(box => box.region_id === region.region_id);
+    return `<div class="review-region"><div><strong>${esc(region.region_id)}</strong><span class="review-state ${region.reviewed_at ? 'confirmed' : ''}">${region.reviewed_at ? '已核对' : '待核对'}</span><small>${region.pad_count} 个已保存 Pad · ${region.unit_count} 个重复版图</small></div><div class="review-region-actions"><button type="button" class="minor" data-focus="${esc(region.region_id)}">定位</button><button type="button" data-redetect="${esc(region.region_id)}" ${hasBox && selectedImage()?.role === 'primary' && !state.detecting ? '' : 'disabled'}>重新识别</button><button type="button" data-review="${esc(region.region_id)}" data-confirm="${region.reviewed_at ? 'false' : 'true'}" ${region.pad_count ? '' : 'disabled'}>${region.reviewed_at ? '撤销确认' : '核对完成'}</button></div></div>`;
+  }).join('') : '<p class="muted">暂无区域。请先在整片图上画框。</p>';
   target.querySelectorAll('[data-focus]').forEach(button => button.onclick = () => {
     const box = state.regionBoxes.find(item => item.region_id === button.dataset.focus);
     if (box) focusRegionBox([box.x1, box.y1, box.x2, box.y2]);
     else toast('当前图片没有该区域框；可在样品与版图查看已导入的 Pad。', true);
+  });
+  target.querySelectorAll('[data-redetect]').forEach(button => button.onclick = () => {
+    const box = state.regionBoxes.find(item => item.region_id === button.dataset.redetect);
+    if (box) detectBoxes([box]);
   });
   target.querySelectorAll('[data-review]').forEach(button => button.onclick = () => action(async () => {
     const confirmed = button.dataset.confirm === 'true';
